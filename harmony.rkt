@@ -58,11 +58,23 @@
         (- cy (* scale (imag-part z)))))   ; flip y for screen coords
 
 ;; SVG arc sweep-flag for the arc from z1->z2 that stays inside the unit disk.
-;; The midpoint of that arc = point on geodesic circle closest to origin = c*(1 - r/|c|).
-;; We compare the angular order of (z1, mid, z2) around c in screen coords:
-;;   positive cross product -> clockwise in y-down screen coords -> sweep=1
+;; Strategy: compute the midpoint of the SHORT arc from z1 to z2 on the geodesic
+;; circle (by averaging their angles from c, taking the short-way-around diff).
+;; That midpoint is always on the correct geodesic segment.  Then check whether
+;; z1->mid->z2 is CW or CCW in screen coords to get the SVG sweep flag.
+;;
+;; Bug with the previous approach: c - r*(c/|c|) is the innermost point of the
+;; full geodesic circle, which lies on the LONG arc when both z1 and z2 are on
+;; the same angular half of the circle (common for reflected tiles).
 (define (arc-sweep-flag z1 z2 c r cx cy scale)
-  (define mid-math (- c (* r (/ c (magnitude c)))))
+  (define a1   (angle (- z1 c)))
+  (define a2   (angle (- z2 c)))
+  ;; Normalize angular difference to (-pi, pi] to get the short arc direction
+  (define diff (let ([d (- a2 a1)])
+                 (cond [(> d pi)  (- d (* 2 pi))]
+                       [(< d (- pi)) (+ d (* 2 pi))]
+                       [else d])))
+  (define mid-math (+ c (make-polar r (+ a1 (/ diff 2)))))
   (define p1s  (z->screen z1      cx cy scale))
   (define mids (z->screen mid-math cx cy scale))
   (define cs   (z->screen c       cx cy scale))
