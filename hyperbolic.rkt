@@ -1,7 +1,8 @@
 #lang racket
 
 (provide polygon-vertices tessellate geodesic-circle diameter?
-         fundamental-radius warp-point reflect-through-geodesic)
+         fundamental-radius warp-point reflect-through-geodesic
+         mobius-apply)
 
 ;; ---- Complex helpers ----
 
@@ -57,6 +58,18 @@
   (define r (fundamental-radius p q))
   (for/list ([k (in-range p)])
     (make-polar r (+ (/ pi 2) (* 2 pi k (/ 1.0 p))))))
+
+;; ---- Möbius transformations preserving the unit disk ----
+;; f(z) = (a·z + b) / (conj(b)·z + conj(a))     with |a|² − |b|² = 1
+;; Identity: a=1, b=0.
+;; Hyperbolic translation by distance d along direction θ:
+;;   a = cosh(d/2), b = sinh(d/2) · e^{iθ}
+;; Rotation by angle φ around origin:
+;;   a = e^{iφ/2}, b = 0
+
+(define (mobius-apply a b z)
+  (/ (+ (* a z) b)
+     (+ (* (conjugate b) z) (conjugate a))))
 
 ;; ---- Warping via reflection sequence ----
 

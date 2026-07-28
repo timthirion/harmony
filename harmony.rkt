@@ -15,6 +15,12 @@
 (define palette-name (make-parameter "harmony"))
 (define draw-spokes? (make-parameter #t))
 (define motif-name   (make-parameter #f))
+(define animate-motion   (make-parameter #f))    ; #f, "rotate", "translate", "both"
+(define animate-frames   (make-parameter 60))
+(define animate-turns    (make-parameter 1.0))
+(define animate-dist     (make-parameter 0.7))
+(define animate-dir      (make-parameter 0.0))   ; degrees
+(define out-dir          (make-parameter "frames"))
 
 ;; ---- Color palettes ----
 ;; Each palette = 3 families (cycled by sector mod 3), tinted darker with depth,
@@ -92,6 +98,18 @@
   (draw-spokes? #f)]
  [("--motif") NAME "Draw a per-tile motif: nested, star, or curves"
   (motif-name NAME)]
+ [("--animate") MOTION "Emit a loop of frames. MOTION: rotate, translate, or both"
+  (animate-motion MOTION)]
+ [("--frames") N "Number of frames per loop (default 60)"
+  (animate-frames (string->number N))]
+ [("--rotate-turns") X "Full turns per loop for rotation (default 1)"
+  (animate-turns (string->number X))]
+ [("--translate-dist") X "Hyperbolic distance amplitude for translation (default 0.7)"
+  (animate-dist (string->number X))]
+ [("--translate-dir") DEG "Translation direction in degrees (default 0)"
+  (animate-dir (string->number DEG))]
+ [("--out-dir") PATH "Directory to write frames into (default 'frames')"
+  (out-dir PATH)]
  #:args () (void))
 
 ;; ---- Input validation ----
@@ -115,6 +133,18 @@
      (die "{~a,~a} is spherical (p-2)(q-2)<4; harmony only tiles the hyperbolic plane." p q)]))
 
 (validate-tiling! (tiling-p) (tiling-q) (tiling-depth))
+
+(define VALID-MOTIONS '("rotate" "translate" "both"))
+
+(when (animate-motion)
+  (unless (member (animate-motion) VALID-MOTIONS)
+    (eprintf "Unknown motion '~a'. Available: ~a~n"
+             (animate-motion)
+             (string-join VALID-MOTIONS ", "))
+    (exit 1))
+  (unless (and (integer? (animate-frames)) (>= (animate-frames) 2))
+    (eprintf "--frames must be an integer ≥ 2~n")
+    (exit 1)))
 
 (define ACTIVE-PALETTE (lookup-palette (palette-name)))
 (define CENTER-COLOR (palette-center ACTIVE-PALETTE))
@@ -217,11 +247,53 @@
 
 (define ACTIVE-MOTIF (and (motif-name) (lookup-motif (motif-name))))
 
-;; Warp every point of every polyline using this tile's reflection axes.
+;; ---- View transform (Möbius applied per frame) ----
+;; Identity by default. The animation loop parameterizes these per frame.
+(define VIEW-A (make-parameter 1))
+(define VIEW-B (make-parameter 0))
+
+(define (view-apply z) (mobius-apply (VIEW-A) (VIEW-B) z))
+
+;; Warp every point of every polyline using this tile's reflection axes,
+;; then apply the current view transform.
 (define (warp-polylines polylines axes)
   (for/list ([pl (in-list polylines)])
     (for/list ([z (in-list pl)])
-      (warp-point z axes))))
+      (view-apply (warp-point z axes)))))
+
+;; Precompute a full tile list with vertices already pushed through the
+;; current view transform. Axes are left original — motif rendering runs
+;; through warp-point on the originals and then re-applies view-apply.
+(define (transform-tiles-for-view tiles)
+  (cond
+    [(and (= (VIEW-A) 1) (= (VIEW-B) 0)) tiles]  ; identity, no-op
+    [else
+     (for/list ([tile (in-list tiles)])
+       (list (map view-apply (first tile))
+             (second tile)
+             (third tile)
+             (fourth tile)))]))
+
+;; ---- Animation frame parameters ----
+;; For frame t in [0, 1), produce the (a, b) Möbius pair for the requested
+;; motion. Rotation is monotonic; translation uses sin so the loop is smooth.
+(define (frame-mobius t motion turns dist dir-rad)
+  (define (m-rotate phi)
+    (values (make-polar 1 (/ phi 2)) 0))
+  (define (m-translate d theta)
+    (values (cosh (/ d 2)) (* (sinh (/ d 2)) (make-polar 1 theta))))
+  (define (m-compose a1 b1 a2 b2)
+    (values (+ (* a1 a2) (* b1 (conjugate b2)))
+            (+ (* a1 b2) (* b1 (conjugate a2)))))
+  (cond
+    [(equal? motion "rotate")
+     (m-rotate (* 2 pi t turns))]
+    [(equal? motion "translate")
+     (m-translate (* dist (sin (* 2 pi t))) dir-rad)]
+    [(equal? motion "both")
+     (define-values (a1 b1) (m-rotate    (* 2 pi t turns)))
+     (define-values (a2 b2) (m-translate (* dist (sin (* 2 pi t))) dir-rad))
+     (m-compose a1 b1 a2 b2)]))
 
 ;; ---- Shared geometry ----
 
@@ -469,14 +541,42 @@
 
 (printf "Tessellating {~a,~a} to depth ~a...~n" p q (tiling-depth))
 (define tiles (tessellate p q (tiling-depth)))
-(printf "Generated ~a tiles. Writing ~a...~n" (length tiles) (image-file))
+(printf "Generated ~a tiles.~n" (length tiles))
+
+(define (render-to! filename tiles-for-frame)
+  (cond
+    [(string-suffix? filename ".png")
+     (write-png! tiles-for-frame p cx cy scale W H filename)
+     (void)]
+    [else
+     (call-with-output-file filename #:exists 'replace
+       (lambda (out) (write-svg! tiles-for-frame p cx cy scale W H out)))]))
 
 (cond
-  [(string-suffix? (image-file) ".png")
-   (write-png! tiles p cx cy scale W H (image-file))
-   (void)]
+  [(animate-motion)
+   (define n     (animate-frames))
+   (define motion (animate-motion))
+   (define turns (animate-turns))
+   (define dist  (animate-dist))
+   (define dir-rad (* (animate-dir) (/ pi 180)))
+   (define dir (out-dir))
+   (unless (directory-exists? dir) (make-directory* dir))
+   (define digits (max 4 (string-length (number->string n))))
+   (printf "Rendering ~a frames (~a) into ~a/~n" n motion dir)
+   (for ([i (in-range n)])
+     (define t (/ i (* 1.0 n)))
+     (define-values (a b) (frame-mobius t motion turns dist dir-rad))
+     (parameterize ([VIEW-A a] [VIEW-B b])
+       (define transformed (transform-tiles-for-view tiles))
+       (define frame-file
+         (build-path dir
+                     (format "frame_~a.png"
+                             (~a (+ i 1) #:width digits #:align 'right #:pad-string "0"))))
+       (render-to! (path->string frame-file) transformed)
+       (printf "  frame ~a/~a~n" (+ i 1) n)))
+   (printf "Done. ffmpeg tip:~n")
+   (printf "  ffmpeg -framerate 30 -i ~a/frame_%0~ad.png -c:v libx264 -pix_fmt yuv420p out.mp4~n" dir digits)]
   [else
-   (call-with-output-file (image-file) #:exists 'replace
-     (lambda (out) (write-svg! tiles p cx cy scale W H out)))])
-
-(printf "Done.\n")
+   (printf "Writing ~a...~n" (image-file))
+   (render-to! (image-file) tiles)
+   (printf "Done.~n")])

@@ -45,6 +45,9 @@ Common options:
 | `--palette NAME`             | `harmony`      | One of: `harmony`, `sunset`, `ocean`, `forest`, `mono` |
 | `--motif NAME`               | (none)         | One of: `nested`, `star`, `curves` — see below   |
 | `--no-spokes`                | (spokes on)    | Omit the white vertex spokes                      |
+| `--animate MOTION`           | (single frame) | `rotate`, `translate`, or `both` — see Animation |
+| `--frames N`                 | `60`           | Frames per loop (animation only)                  |
+| `--out-dir PATH`             | `frames`       | Directory for animation frames                    |
 
 Invalid `{p,q}` (spherical or Euclidean) is rejected with a message.
 
@@ -92,6 +95,43 @@ racket harmony.rkt -p 8 -q 3 --depth 5 --palette ocean   --motif curves -d 1200 
 ```
 
 Spokes are automatically suppressed when a motif is active.
+
+## Animation
+
+`--animate MOTION` emits a sequence of PNG frames showing the tessellation transformed by a smooth hyperbolic isometry. The motion loops seamlessly — frame N equals frame 0 — so the output feeds directly into `ffmpeg` for GIF or MP4.
+
+<p align="center">
+  <img src="examples/animation/translate-7-3-sunset.gif" alt="{7,3} sunset translating back and forth" width="400">
+</p>
+
+Three motions:
+
+| motion      | what it does                                                                    |
+|-------------|---------------------------------------------------------------------------------|
+| `rotate`    | Rotates the tessellation around the origin. Fits `--rotate-turns` full turns.   |
+| `translate` | Hyperbolic translation with a sinusoidal envelope: tiles slide out, come back, slide the other way, come back. `--translate-dist` sets amplitude, `--translate-dir` the axis in degrees. |
+| `both`      | Composition of rotation and translation.                                        |
+
+Reproduce the demo above:
+
+```sh
+racket harmony.rkt -p 7 -q 3 --depth 7 --palette sunset -d 400 400 \
+  --animate translate --frames 40 --translate-dist 1.2 --out-dir frames/
+
+ffmpeg -framerate 20 -i frames/frame_%04d.png \
+  -vf "fps=15,scale=300:300,split[s0][s1];[s0]palettegen=max_colors=64[p];[s1][p]paletteuse" \
+  -loop 0 translate-7-3-sunset.gif
+```
+
+For MP4 output instead:
+
+```sh
+ffmpeg -framerate 20 -i frames/frame_%04d.png -c:v libx264 -pix_fmt yuv420p out.mp4
+```
+
+Animation notes:
+- Increase `--depth` beyond your usual static value. When tiles slide across the disk, previously off-screen tiles rotate into view and would otherwise "pop in" as gaps. Depth 6–8 works well for `{7,3}`.
+- Each frame takes about the same time as a single-frame render. 60 frames at depth 7 is ~15 s on a modern laptop.
 
 ## How it works
 
