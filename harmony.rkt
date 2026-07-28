@@ -12,6 +12,64 @@
 (define tiling-p     (make-parameter 9))
 (define tiling-q     (make-parameter 3))
 (define tiling-depth (make-parameter 4))
+(define palette-name (make-parameter "harmony"))
+(define draw-spokes? (make-parameter #t))
+
+;; ---- Color palettes ----
+;; Each palette = 3 families (cycled by sector mod 3), tinted darker with depth,
+;; plus a center color, stroke color, spoke color, and disk background.
+
+(struct palette (families center stroke spoke disk outer) #:transparent)
+
+(define PALETTES
+  (hash
+   "harmony"
+   (palette
+    (vector
+     (vector "#B8CCE0" "#9DB8D5" "#82A4CA" "#6890BF" "#507CAE")   ; blue
+     (vector "#E0B8B8" "#D5A0A0" "#CA8888" "#BF7070" "#AE5858")   ; rose
+     (vector "#C0C0CC" "#ABABBA" "#9696A8" "#818196" "#6C6C84"))  ; grey
+    "#D0DCE8" "#778899" "#FFFFFF" "#EEF2F5" "#FFFFFF")
+
+   "sunset"
+   (palette
+    (vector
+     (vector "#FFD9A8" "#FFC17F" "#FFA455" "#F1852C" "#D46A15")   ; amber
+     (vector "#F7B7B7" "#EE8F8F" "#DE6B6B" "#C64D4D" "#A63838")   ; coral
+     (vector "#C9A5CB" "#B282B5" "#98639C" "#7C4A82" "#5F3466"))  ; violet
+    "#FFE8CC" "#3A1F1F" "#FFF6E8" "#241318" "#0F0709")
+
+   "ocean"
+   (palette
+    (vector
+     (vector "#BCE3E5" "#95CFD3" "#6BBAC1" "#3EA3AD" "#218893")   ; teal
+     (vector "#B7D0EB" "#8FB4DE" "#6798CE" "#3F7CBB" "#255E9E")   ; blue
+     (vector "#C6C9E6" "#A2A7D8" "#7C86C7" "#5865B4" "#39479A"))  ; indigo
+    "#DFF3F4" "#0F2A38" "#EAF7FA" "#0C1D28" "#050B10")
+
+   "forest"
+   (palette
+    (vector
+     (vector "#CFE3B5" "#B4D28E" "#95BE64" "#749F41" "#556F27")   ; leaf
+     (vector "#D9D2A6" "#C4BB78" "#A89F4E" "#847E31" "#5E5A20")   ; olive
+     (vector "#B9C7A3" "#95AB84" "#728C63" "#527048" "#385331"))  ; moss
+    "#E9EFD8" "#1F2A18" "#F6F7EA" "#1B2415" "#0B100A")
+
+   "mono"
+   (palette
+    (vector
+     (vector "#DADADA" "#BCBCBC" "#9E9E9E" "#7E7E7E" "#5F5F5F")
+     (vector "#CFCFCF" "#B0B0B0" "#909090" "#707070" "#525252")
+     (vector "#C4C4C4" "#A4A4A4" "#848484" "#646464" "#464646"))
+    "#E5E5E5" "#2A2A2A" "#FFFFFF" "#F5F5F5" "#FFFFFF")))
+
+(define (lookup-palette name)
+  (hash-ref PALETTES name
+            (lambda ()
+              (eprintf "Unknown palette '~a'. Available: ~a~n"
+                       name
+                       (string-join (sort (hash-keys PALETTES) string<?) ", "))
+              (exit 1))))
 
 (command-line
  #:usage-help "Harmony generates hyperbolic tessellation diagrams"
@@ -27,27 +85,48 @@
   (tiling-q (string->number Q))]
  [("--depth") D "Tessellation recursion depth"
   (tiling-depth (string->number D))]
+ [("--palette") NAME "Color palette: harmony, sunset, ocean, forest, mono"
+  (palette-name NAME)]
+ [("--no-spokes") "Omit the white vertex spokes"
+  (draw-spokes? #f)]
  #:args () (void))
 
-;; ---- Color palette ----
-;; Three families cycling by (sector mod 3), tinted darker with depth
+;; ---- Input validation ----
 
-(define PALETTES
-  (vector
-   (vector "#B8CCE0" "#9DB8D5" "#82A4CA" "#6890BF" "#507CAE")   ; blue family
-   (vector "#E0B8B8" "#D5A0A0" "#CA8888" "#BF7070" "#AE5858")   ; rose family
-   (vector "#C0C0CC" "#ABABBA" "#9696A8" "#818196" "#6C6C84"))) ; grey family
+(define (validate-tiling! p q depth)
+  (define (die msg . args)
+    (apply eprintf msg args)
+    (eprintf "~n")
+    (exit 1))
+  (unless (and (integer? p) (>= p 3))
+    (die "p must be an integer ≥ 3 (got ~a)" p))
+  (unless (and (integer? q) (>= q 3))
+    (die "q must be an integer ≥ 3 (got ~a)" q))
+  (unless (and (integer? depth) (>= depth 0))
+    (die "depth must be a non-negative integer (got ~a)" depth))
+  (define product (* (- p 2) (- q 2)))
+  (cond
+    [(= product 4)
+     (die "{~a,~a} is Euclidean (p-2)(q-2)=4; harmony only tiles the hyperbolic plane." p q)]
+    [(< product 4)
+     (die "{~a,~a} is spherical (p-2)(q-2)<4; harmony only tiles the hyperbolic plane." p q)]))
 
-(define CENTER-COLOR "#D0DCE8")
-(define STROKE-COLOR "#778899")
-(define SPOKE-COLOR  "#FFFFFF")
+(validate-tiling! (tiling-p) (tiling-q) (tiling-depth))
+
+(define ACTIVE-PALETTE (lookup-palette (palette-name)))
+(define CENTER-COLOR (palette-center ACTIVE-PALETTE))
+(define STROKE-COLOR (palette-stroke ACTIVE-PALETTE))
+(define SPOKE-COLOR  (palette-spoke  ACTIVE-PALETTE))
+(define DISK-COLOR   (palette-disk   ACTIVE-PALETTE))
+(define OUTER-COLOR  (palette-outer  ACTIVE-PALETTE))
 
 (define (tile-color depth sector)
   (if (= sector -1)
       CENTER-COLOR
-      (let* ([family (modulo sector 3)]
-             [pal    (vector-ref PALETTES family)]
-             [idx    (min depth (- (vector-length pal) 1))])
+      (let* ([families (palette-families ACTIVE-PALETTE)]
+             [family   (modulo sector 3)]
+             [pal      (vector-ref families family)]
+             [idx      (min depth (- (vector-length pal) 1))])
         (vector-ref pal idx))))
 
 ;; ---- Shared geometry ----
@@ -130,20 +209,21 @@
   (define sorted (sort tiles > #:key second))
   (fprintf out "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n")
   (fprintf out "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"~a\" height=\"~a\">\n" W H)
-  (fprintf out "  <rect width=\"~a\" height=\"~a\" fill=\"white\"/>\n" W H)
-  (fprintf out "  <circle cx=\"~a\" cy=\"~a\" r=\"~a\" fill=\"#eef2f5\" stroke=\"none\"/>\n"
-           (fmt cx) (fmt cy) (fmt scale))
+  (fprintf out "  <rect width=\"~a\" height=\"~a\" fill=\"~a\"/>\n" W H OUTER-COLOR)
+  (fprintf out "  <circle cx=\"~a\" cy=\"~a\" r=\"~a\" fill=\"~a\" stroke=\"none\"/>\n"
+           (fmt cx) (fmt cy) (fmt scale) DISK-COLOR)
   ;; Pass 1: fills
   (for ([tile sorted])
     (fprintf out "~a\n" (polygon-fill-svg (first tile) (second tile) (third tile) cx cy scale)))
   ;; Pass 2: spokes (on top of fills, under outlines)
-  (for ([tile tiles])
-    (fprintf out "~a\n" (spokes-svg (first tile) p cx cy scale)))
+  (when (draw-spokes?)
+    (for ([tile tiles])
+      (fprintf out "~a\n" (spokes-svg (first tile) p cx cy scale))))
   ;; Pass 3: outlines
   (for ([tile sorted])
     (fprintf out "~a\n" (polygon-stroke-svg (first tile) (second tile) cx cy scale)))
-  (fprintf out "  <circle cx=\"~a\" cy=\"~a\" r=\"~a\" fill=\"none\" stroke=\"#445566\" stroke-width=\"2\"/>\n"
-           (fmt cx) (fmt cy) (fmt scale))
+  (fprintf out "  <circle cx=\"~a\" cy=\"~a\" r=\"~a\" fill=\"none\" stroke=\"~a\" stroke-width=\"2\"/>\n"
+           (fmt cx) (fmt cy) (fmt scale) STROKE-COLOR)
   (fprintf out "</svg>\n"))
 
 ;; ---- PNG output (racket/draw) ----
@@ -205,12 +285,13 @@
   (define no-pen   (make-object pen%   "black" 0 'transparent))
   (define no-brush (make-object brush% "black" 'transparent))
 
-  (send dc set-background (make-object color% 255 255 255))
+  (send dc set-smoothing 'aligned)
+  (send dc set-background (hex->color OUTER-COLOR))
   (send dc clear)
 
   ;; Background disk
   (send dc set-pen no-pen)
-  (send dc set-brush (make-object brush% (hex->color "#eef2f5") 'solid))
+  (send dc set-brush (make-object brush% (hex->color DISK-COLOR) 'solid))
   (send dc draw-ellipse (- cx scale) (- cy scale) (* 2 scale) (* 2 scale))
 
   ;; Pass 1: fills
@@ -220,14 +301,15 @@
     (send dc draw-path (tile-dc-path (first tile) cx cy scale)))
 
   ;; Pass 2: spokes
-  (send dc set-pen (make-object pen% (hex->color SPOKE-COLOR) 1 'solid))
-  (send dc set-brush no-brush)
-  (for ([tile (in-list tiles)])
-    (define c  (tile-centroid (first tile) p))
-    (define cs (z->screen c cx cy scale))
-    (for ([v (first tile)])
-      (define vs (z->screen v cx cy scale))
-      (send dc draw-line (car cs) (cdr cs) (car vs) (cdr vs))))
+  (when (draw-spokes?)
+    (send dc set-pen (make-object pen% (hex->color SPOKE-COLOR) 1 'solid))
+    (send dc set-brush no-brush)
+    (for ([tile (in-list tiles)])
+      (define c  (tile-centroid (first tile) p))
+      (define cs (z->screen c cx cy scale))
+      (for ([v (first tile)])
+        (define vs (z->screen v cx cy scale))
+        (send dc draw-line (car cs) (cdr cs) (car vs) (cdr vs)))))
 
   ;; Pass 3: outlines
   (send dc set-brush no-brush)
@@ -238,7 +320,7 @@
     (send dc draw-path (tile-dc-path (first tile) cx cy scale)))
 
   ;; Boundary circle
-  (send dc set-pen (make-object pen% (hex->color "#445566") 2 'solid))
+  (send dc set-pen (make-object pen% (hex->color STROKE-COLOR) 2 'solid))
   (send dc set-brush no-brush)
   (send dc draw-ellipse (- cx scale) (- cy scale) (* 2 scale) (* 2 scale))
 
@@ -258,9 +340,12 @@
 (define tiles (tessellate p q (tiling-depth)))
 (printf "Generated ~a tiles. Writing ~a...~n" (length tiles) (image-file))
 
-(if (string-suffix? ".png" (image-file))
-    (write-png! tiles p cx cy scale W H (image-file))
-    (call-with-output-file (image-file) #:exists 'replace
-      (lambda (out) (write-svg! tiles p cx cy scale W H out))))
+(cond
+  [(string-suffix? (image-file) ".png")
+   (write-png! tiles p cx cy scale W H (image-file))
+   (void)]
+  [else
+   (call-with-output-file (image-file) #:exists 'replace
+     (lambda (out) (write-svg! tiles p cx cy scale W H out)))])
 
 (printf "Done.\n")
