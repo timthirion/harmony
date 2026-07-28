@@ -14,6 +14,7 @@
 (define tiling-depth (make-parameter 4))
 (define palette-name (make-parameter "harmony"))
 (define draw-spokes? (make-parameter #t))
+(define motif-name   (make-parameter #f))
 
 ;; ---- Color palettes ----
 ;; Each palette = 3 families (cycled by sector mod 3), tinted darker with depth,
@@ -89,6 +90,8 @@
   (palette-name NAME)]
  [("--no-spokes") "Omit the white vertex spokes"
   (draw-spokes? #f)]
+ [("--motif") NAME "Draw a per-tile motif: nested, star, or curves"
+  (motif-name NAME)]
  #:args () (void))
 
 ;; ---- Input validation ----
@@ -128,6 +131,97 @@
              [pal      (vector-ref families family)]
              [idx      (min depth (- (vector-length pal) 1))])
         (vector-ref pal idx))))
+
+;; ---- Motifs ----
+;; A motif is a procedure (p q) -> list of polylines, where each polyline is a
+;; list of complex-number points in the fundamental polygon's local coordinates.
+;; Segments between successive points are drawn as straight lines after warping,
+;; so motif definitions subdivide curves into enough points to look smooth.
+
+(define (fund-vertices p q) (polygon-vertices p q))
+
+(define (side-midpoint verts i p)
+  (define v1 (list-ref verts i))
+  (define v2 (list-ref verts (modulo (+ i 1) p)))
+  (/ (+ v1 v2) 2))
+
+(define (subdivide-segment a b n)
+  (for/list ([i (in-range (+ n 1))])
+    (define t (/ i (* 1.0 n))) (+ (* (- 1 t) a) (* t b))))
+
+(define (bezier-sample p0 p1 p2 n)
+  (for/list ([i (in-range (+ n 1))])
+    (define t (/ i (* 1.0 n)))
+    (+ (* (sqr (- 1 t)) p0)
+       (* 2 (- 1 t) t p1)
+       (* (sqr t) p2))))
+
+;; Nested inscribed polygon at 0.62 of fundamental radius.
+;; Subdivide each side so warped edges stay smooth-looking.
+(define (motif-nested p q)
+  (define r (fundamental-radius p q))
+  (define inner-r (* 0.62 r))
+  (define pts (for/list ([k (in-range p)])
+                (make-polar inner-r (+ (/ pi 2) (* 2 pi k (/ 1.0 p))))))
+  (define closed (append pts (list (car pts))))
+  (list
+   (apply append
+          (for/list ([i (in-range p)])
+            (define a (list-ref closed i))
+            (define b (list-ref closed (+ i 1)))
+            (define seg (subdivide-segment a b 16))
+            (if (= i 0) seg (cdr seg))))))
+
+;; 2p-pointed star: outer points at fundamental vertex angles, inner points at
+;; side-midpoint angles. Subdivided along each edge.
+(define (motif-star p q)
+  (define r (fundamental-radius p q))
+  (define outer-r (* 0.90 r))
+  (define inner-r (* 0.35 r))
+  (define pts (for/list ([k (in-range (* 2 p))])
+                (define angle (+ (/ pi 2) (* pi k (/ 1.0 p))))
+                (define rad (if (even? k) outer-r inner-r))
+                (make-polar rad angle)))
+  (define closed (append pts (list (car pts))))
+  (list
+   (apply append
+          (for/list ([i (in-range (* 2 p))])
+            (define a (list-ref closed i))
+            (define b (list-ref closed (+ i 1)))
+            (define seg (subdivide-segment a b 6))
+            (if (= i 0) seg (cdr seg))))))
+
+;; Rosette: p quadratic-Bezier arcs, each from side-midpoint i to
+;; side-midpoint i+1, bulging inward. When rendered, the ring of arcs
+;; forms a flower inside every tile.
+(define (motif-curves p q)
+  (define verts (fund-vertices p q))
+  (for/list ([i (in-range p)])
+    (define a (side-midpoint verts i p))
+    (define b (side-midpoint verts (modulo (+ i 1) p) p))
+    (define ctrl (* 0.35 (/ (+ a b) 2)))
+    (bezier-sample a ctrl b 18)))
+
+(define MOTIFS
+  (hash "nested" motif-nested
+        "star"   motif-star
+        "curves" motif-curves))
+
+(define (lookup-motif name)
+  (hash-ref MOTIFS name
+            (lambda ()
+              (eprintf "Unknown motif '~a'. Available: ~a~n"
+                       name
+                       (string-join (sort (hash-keys MOTIFS) string<?) ", "))
+              (exit 1))))
+
+(define ACTIVE-MOTIF (and (motif-name) (lookup-motif (motif-name))))
+
+;; Warp every point of every polyline using this tile's reflection axes.
+(define (warp-polylines polylines axes)
+  (for/list ([pl (in-list polylines)])
+    (for/list ([z (in-list pl)])
+      (warp-point z axes))))
 
 ;; ---- Shared geometry ----
 
@@ -205,6 +299,20 @@
   (format "  <path d=\"~a\" fill=\"none\" stroke=\"~a\" stroke-width=\"0.5\" stroke-opacity=\"0.7\"/>"
           (string-join segs " ") SPOKE-COLOR))
 
+(define (motif-svg polylines cx cy scale)
+  (define paths
+    (for/list ([pl (in-list polylines)])
+      (define fp (z->screen (car pl) cx cy scale))
+      (define moves
+        (string-join
+         (for/list ([z (in-list (cdr pl))])
+           (define ps (z->screen z cx cy scale))
+           (format "L ~a ~a" (fmt (car ps)) (fmt (cdr ps))))
+         " "))
+      (format "M ~a ~a ~a" (fmt (car fp)) (fmt (cdr fp)) moves)))
+  (format "  <path d=\"~a\" fill=\"none\" stroke=\"~a\" stroke-width=\"1.4\" stroke-linejoin=\"round\" stroke-linecap=\"round\"/>"
+          (string-join paths " ") STROKE-COLOR))
+
 (define (write-svg! tiles p cx cy scale W H out)
   (define sorted (sort tiles > #:key second))
   (fprintf out "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n")
@@ -216,9 +324,14 @@
   (for ([tile sorted])
     (fprintf out "~a\n" (polygon-fill-svg (first tile) (second tile) (third tile) cx cy scale)))
   ;; Pass 2: spokes (on top of fills, under outlines)
-  (when (draw-spokes?)
+  (when (and (draw-spokes?) (not ACTIVE-MOTIF))
     (for ([tile tiles])
       (fprintf out "~a\n" (spokes-svg (first tile) p cx cy scale))))
+  ;; Pass 2b: motifs
+  (when ACTIVE-MOTIF
+    (define motif-lines (ACTIVE-MOTIF p (tiling-q)))
+    (for ([tile tiles])
+      (fprintf out "~a\n" (motif-svg (warp-polylines motif-lines (fourth tile)) cx cy scale))))
   ;; Pass 3: outlines
   (for ([tile sorted])
     (fprintf out "~a\n" (polygon-stroke-svg (first tile) (second tile) cx cy scale)))
@@ -300,8 +413,8 @@
     (send dc set-brush (make-object brush% (hex->color (tile-color (second tile) (third tile))) 'solid))
     (send dc draw-path (tile-dc-path (first tile) cx cy scale)))
 
-  ;; Pass 2: spokes
-  (when (draw-spokes?)
+  ;; Pass 2: spokes (suppressed when motif is active)
+  (when (and (draw-spokes?) (not ACTIVE-MOTIF))
     (send dc set-pen (make-object pen% (hex->color SPOKE-COLOR) 1 'solid))
     (send dc set-brush no-brush)
     (for ([tile (in-list tiles)])
@@ -310,6 +423,24 @@
       (for ([v (first tile)])
         (define vs (z->screen v cx cy scale))
         (send dc draw-line (car cs) (cdr cs) (car vs) (cdr vs)))))
+
+  ;; Pass 2b: motifs
+  (when ACTIVE-MOTIF
+    (define motif-lines (ACTIVE-MOTIF p (tiling-q)))
+    (define motif-pen
+      (new pen% [color (hex->color STROKE-COLOR)] [width 1.4] [style 'solid]
+                [cap 'round] [join 'round]))
+    (send dc set-pen motif-pen)
+    (send dc set-brush no-brush)
+    (for ([tile (in-list tiles)])
+      (define warped (warp-polylines motif-lines (fourth tile)))
+      (for ([pl (in-list warped)])
+        (define pts (for/list ([z (in-list pl)]) (z->screen z cx cy scale)))
+        (define path (new dc-path%))
+        (send path move-to (car (car pts)) (cdr (car pts)))
+        (for ([pt (in-list (cdr pts))])
+          (send path line-to (car pt) (cdr pt)))
+        (send dc draw-path path))))
 
   ;; Pass 3: outlines
   (send dc set-brush no-brush)

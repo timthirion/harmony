@@ -1,6 +1,7 @@
 #lang racket
 
-(provide polygon-vertices tessellate geodesic-circle diameter?)
+(provide polygon-vertices tessellate geodesic-circle diameter?
+         fundamental-radius warp-point reflect-through-geodesic)
 
 ;; ---- Complex helpers ----
 
@@ -57,10 +58,21 @@
   (for/list ([k (in-range p)])
     (make-polar r (+ (/ pi 2) (* 2 pi k (/ 1.0 p))))))
 
+;; ---- Warping via reflection sequence ----
+
+;; Apply a sequence of geodesic reflections to a point, in order.
+;; Each axis is a pair (v1 . v2) of complex-number endpoints.
+(define (warp-point z axes)
+  (for/fold ([w z]) ([axis (in-list axes)])
+    (reflect-through-geodesic (car axis) (cdr axis) w)))
+
 ;; ---- Tessellation via BFS ----
 
-;; Returns list of (vertices depth sector) where sector is the side-index of
-;; the first reflection from the central tile (-1 for the central tile itself).
+;; Returns list of (vertices depth sector axes) where:
+;;  - sector is the side-index of the first reflection from the central tile
+;;    (-1 for the central tile itself);
+;;  - axes is the list of (v1 . v2) reflection axes used to reach this tile
+;;    from the central tile ('() for the central tile).
 (define (tessellate p q depth)
   (define verts0 (polygon-vertices p q))
   (define visited (make-hash))
@@ -74,15 +86,17 @@
   (define (reflect-tile vs i)
     (define v1 (list-ref vs i))
     (define v2 (list-ref vs (modulo (+ i 1) p)))
-    (map (lambda (v) (reflect-through-geodesic v1 v2 v)) vs))
+    (values (cons v1 v2)
+            (map (lambda (v) (reflect-through-geodesic v1 v2 v)) vs)))
 
-  ;; Each queue item: (vertices depth sector)
-  (let loop ([queue (list (list verts0 0 -1))])
+  ;; Each queue item: (vertices depth sector axes)
+  (let loop ([queue (list (list verts0 0 -1 '()))])
     (unless (null? queue)
       (define item (car queue))
       (define vs   (first item))
       (define d    (second item))
       (define sec  (third item))
+      (define axes (fourth item))
       (define key  (tile-key vs))
       (define rest (cdr queue))
       (cond
@@ -93,8 +107,10 @@
          (loop (if (< d depth)
                    (append rest
                            (for/list ([i (in-range p)])
-                             (list (reflect-tile vs i)
+                             (define-values (axis vs2) (reflect-tile vs i))
+                             (list vs2
                                    (+ d 1)
-                                   (if (= sec -1) i sec))))
+                                   (if (= sec -1) i sec)
+                                   (append axes (list axis)))))
                    rest))])))
   result)
