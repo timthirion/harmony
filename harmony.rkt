@@ -15,6 +15,7 @@
 (define palette-name (make-parameter "harmony"))
 (define draw-spokes? (make-parameter #t))
 (define motif-name   (make-parameter #f))
+(define model-name   (make-parameter "poincare"))
 (define animate-motion   (make-parameter #f))    ; #f, "rotate", "translate", "both"
 (define animate-frames   (make-parameter 60))
 (define animate-turns    (make-parameter 1.0))
@@ -98,6 +99,8 @@
   (draw-spokes? #f)]
  [("--motif") NAME "Draw a per-tile motif: nested, star, or curves"
   (motif-name NAME)]
+ [("--model") NAME "Projection model: poincare, klein, halfplane, band"
+  (model-name NAME)]
  [("--animate") MOTION "Emit a loop of frames. MOTION: rotate, translate, or both"
   (animate-motion MOTION)]
  [("--frames") N "Number of frames per loop (default 60)"
@@ -133,6 +136,14 @@
      (die "{~a,~a} is spherical (p-2)(q-2)<4; harmony only tiles the hyperbolic plane." p q)]))
 
 (validate-tiling! (tiling-p) (tiling-q) (tiling-depth))
+
+(define VALID-MODELS '("poincare" "klein" "halfplane" "band"))
+
+(unless (member (model-name) VALID-MODELS)
+  (eprintf "Unknown model '~a'. Available: ~a~n"
+           (model-name)
+           (string-join VALID-MODELS ", "))
+  (exit 1))
 
 (define VALID-MOTIONS '("rotate" "translate" "both"))
 
@@ -252,7 +263,18 @@
 (define VIEW-A (make-parameter 1))
 (define VIEW-B (make-parameter 0))
 
-(define (view-apply z) (mobius-apply (VIEW-A) (VIEW-B) z))
+;; ---- Model projection ----
+;; All geometry is computed in the Poincaré disk. `to-model` projects a
+;; Poincaré point into the currently-selected model's coordinate system.
+(define (to-model z)
+  (case (model-name)
+    [("poincare")  z]
+    [("klein")     (/ (* 2 z) (+ 1 (sqr (magnitude z))))]
+    [("halfplane") (* +i (/ (+ 1 z) (- 1 z)))]
+    [("band")      (- (log (* +i (/ (+ 1 z) (- 1 z)))) (* +i (/ pi 2)))]))
+
+;; view-apply = Möbius view transform then model projection.
+(define (view-apply z) (to-model (mobius-apply (VIEW-A) (VIEW-B) z)))
 
 ;; Warp every point of every polyline using this tile's reflection axes,
 ;; then apply the current view transform.
@@ -262,11 +284,13 @@
       (view-apply (warp-point z axes)))))
 
 ;; Precompute a full tile list with vertices already pushed through the
-;; current view transform. Axes are left original — motif rendering runs
-;; through warp-point on the originals and then re-applies view-apply.
+;; current view transform (Möbius + model projection). Axes are left
+;; original — motif rendering runs through warp-point on the originals and
+;; then re-applies view-apply.
 (define (transform-tiles-for-view tiles)
   (cond
-    [(and (= (VIEW-A) 1) (= (VIEW-B) 0)) tiles]  ; identity, no-op
+    [(and (= (VIEW-A) 1) (= (VIEW-B) 0) (equal? (model-name) "poincare"))
+     tiles]
     [else
      (for/list ([tile (in-list tiles)])
        (list (map view-apply (first tile))
@@ -325,7 +349,38 @@
   (define vmx (- (car mids) (car cs))) (define vmy (- (cdr mids) (cdr cs)))
   (if (> (- (* v1x vmy) (* v1y vmx)) 0) 1 0))
 
+;; UHP: given two points z1, z2 in the upper half-plane, geodesics are either
+;; a vertical line (if real parts match) or the upper arc of a circle whose
+;; center lies on the real axis. Returns (values c r vertical?) where c is
+;; complex-valued (imaginary part is 0 when vertical? is #f).
+(define (uhp-geodesic z1 z2)
+  (define x1 (real-part z1)) (define y1 (imag-part z1))
+  (define x2 (real-part z2)) (define y2 (imag-part z2))
+  (cond
+    [(< (abs (- x1 x2)) 1e-9)
+     (values 0 0 #t)]
+    [else
+     (define cr (/ (- (+ (sqr x2) (sqr y2)) (+ (sqr x1) (sqr y1)))
+                   (* 2 (- x2 x1))))
+     (define r  (sqrt (+ (sqr (- x1 cr)) (sqr y1))))
+     (values (make-rectangular cr 0) r #f)]))
+
+;; Undo the band projection back into UHP so we can walk along a UHP
+;; geodesic and re-project each sample.
+(define (band->uhp w) (exp (+ w (* +i (/ pi 2)))))
+
 (define (arc-segment z1 z2 cx cy scale)
+  (case (model-name)
+    [("klein")     (arc-segment-line z2 cx cy scale)]
+    [("halfplane") (arc-segment-uhp  z1 z2 cx cy scale)]
+    [("band")      (arc-segment-band z1 z2 cx cy scale)]
+    [else          (arc-segment-poincare z1 z2 cx cy scale)]))
+
+(define (arc-segment-line z2 cx cy scale)
+  (define p2s (z->screen z2 cx cy scale))
+  (format "L ~a ~a" (fmt (car p2s)) (fmt (cdr p2s))))
+
+(define (arc-segment-poincare z1 z2 cx cy scale)
   (define p2s (z->screen z2 cx cy scale))
   (define x2  (fmt (car p2s)))
   (define y2  (fmt (cdr p2s)))
@@ -335,6 +390,53 @@
         (define sr    (* scale r))
         (define sweep (arc-sweep-flag z1 z2 c r cx cy scale))
         (format "A ~a ~a 0 0 ~a ~a ~a" (fmt sr) (fmt sr) sweep x2 y2))))
+
+(define (arc-segment-uhp z1 z2 cx cy scale)
+  (define p2s (z->screen z2 cx cy scale))
+  (define x2s (fmt (car p2s)))
+  (define y2s (fmt (cdr p2s)))
+  (define-values (c r vert?) (uhp-geodesic z1 z2))
+  (cond
+    [vert? (format "L ~a ~a" x2s y2s)]
+    [else
+     (define sr    (* scale r))
+     (define sweep (arc-sweep-flag z1 z2 c r cx cy scale))
+     (format "A ~a ~a 0 0 ~a ~a ~a" (fmt sr) (fmt sr) sweep x2s y2s)]))
+
+(define (arc-segment-band z1 z2 cx cy scale)
+  ;; Walk the geodesic in UHP, project each sample back to band coords.
+  (define uz1 (band->uhp z1))
+  (define uz2 (band->uhp z2))
+  (define-values (c r vert?) (uhp-geodesic uz1 uz2))
+  (define N 16)
+  (cond
+    [vert?
+     ;; Rare case: vertical line in UHP → curved line in band.
+     (define y1 (imag-part uz1))
+     (define y2 (imag-part uz2))
+     (define x0 (real-part uz1))
+     (string-join
+      (for/list ([i (in-range 1 (+ N 1))])
+        (define t (/ i (* 1.0 N)))
+        (define uhp-pt (make-rectangular x0 (+ y1 (* (- y2 y1) t))))
+        (define band-pt (- (log uhp-pt) (* +i (/ pi 2))))
+        (define ps (z->screen band-pt cx cy scale))
+        (format "L ~a ~a" (fmt (car ps)) (fmt (cdr ps))))
+      " ")]
+    [else
+     (define cr (real-part c))
+     (define a1 (angle (make-rectangular (- (real-part uz1) cr) (imag-part uz1))))
+     (define a2 (angle (make-rectangular (- (real-part uz2) cr) (imag-part uz2))))
+     (define diff (- a2 a1))
+     (string-join
+      (for/list ([i (in-range 1 (+ N 1))])
+        (define t (/ i (* 1.0 N)))
+        (define theta (+ a1 (* diff t)))
+        (define uhp-pt (+ cr (* r (make-polar 1 theta))))
+        (define band-pt (- (log uhp-pt) (* +i (/ pi 2))))
+        (define ps (z->screen band-pt cx cy scale))
+        (format "L ~a ~a" (fmt (car ps)) (fmt (cdr ps))))
+      " ")]))
 
 (define (polygon-fill-svg verts depth sector cx cy scale)
   (define n   (length verts))
@@ -385,13 +487,43 @@
   (format "  <path d=\"~a\" fill=\"none\" stroke=\"~a\" stroke-width=\"1.4\" stroke-linejoin=\"round\" stroke-linecap=\"round\"/>"
           (string-join paths " ") STROKE-COLOR))
 
+(define (model-background-svg! out cx cy scale W H)
+  (case (model-name)
+    [("poincare" "klein")
+     (fprintf out "  <circle cx=\"~a\" cy=\"~a\" r=\"~a\" fill=\"~a\" stroke=\"none\"/>~n"
+              (fmt cx) (fmt cy) (fmt scale) DISK-COLOR)]
+    [("halfplane")
+     ;; Fill the upper half-plane region (above real axis) with DISK-COLOR.
+     (fprintf out "  <rect x=\"0\" y=\"0\" width=\"~a\" height=\"~a\" fill=\"~a\"/>~n"
+              W (fmt cy) DISK-COLOR)]
+    [("band")
+     (define y-top (- cy (* scale (/ pi 2))))
+     (define y-bot (+ cy (* scale (/ pi 2))))
+     (fprintf out "  <rect x=\"0\" y=\"~a\" width=\"~a\" height=\"~a\" fill=\"~a\"/>~n"
+              (fmt y-top) W (fmt (- y-bot y-top)) DISK-COLOR)]))
+
+(define (model-boundary-svg! out cx cy scale W H)
+  (case (model-name)
+    [("poincare" "klein")
+     (fprintf out "  <circle cx=\"~a\" cy=\"~a\" r=\"~a\" fill=\"none\" stroke=\"~a\" stroke-width=\"2\"/>~n"
+              (fmt cx) (fmt cy) (fmt scale) STROKE-COLOR)]
+    [("halfplane")
+     (fprintf out "  <line x1=\"0\" y1=\"~a\" x2=\"~a\" y2=\"~a\" stroke=\"~a\" stroke-width=\"2\"/>~n"
+              (fmt cy) W (fmt cy) STROKE-COLOR)]
+    [("band")
+     (define y-top (- cy (* scale (/ pi 2))))
+     (define y-bot (+ cy (* scale (/ pi 2))))
+     (fprintf out "  <line x1=\"0\" y1=\"~a\" x2=\"~a\" y2=\"~a\" stroke=\"~a\" stroke-width=\"2\"/>~n"
+              (fmt y-top) W (fmt y-top) STROKE-COLOR)
+     (fprintf out "  <line x1=\"0\" y1=\"~a\" x2=\"~a\" y2=\"~a\" stroke=\"~a\" stroke-width=\"2\"/>~n"
+              (fmt y-bot) W (fmt y-bot) STROKE-COLOR)]))
+
 (define (write-svg! tiles p cx cy scale W H out)
   (define sorted (sort tiles > #:key second))
   (fprintf out "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n")
   (fprintf out "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"~a\" height=\"~a\">\n" W H)
   (fprintf out "  <rect width=\"~a\" height=\"~a\" fill=\"~a\"/>\n" W H OUTER-COLOR)
-  (fprintf out "  <circle cx=\"~a\" cy=\"~a\" r=\"~a\" fill=\"~a\" stroke=\"none\"/>\n"
-           (fmt cx) (fmt cy) (fmt scale) DISK-COLOR)
+  (model-background-svg! out cx cy scale W H)
   ;; Pass 1: fills
   (for ([tile sorted])
     (fprintf out "~a\n" (polygon-fill-svg (first tile) (second tile) (third tile) cx cy scale)))
@@ -407,8 +539,7 @@
   ;; Pass 3: outlines
   (for ([tile sorted])
     (fprintf out "~a\n" (polygon-stroke-svg (first tile) (second tile) cx cy scale)))
-  (fprintf out "  <circle cx=\"~a\" cy=\"~a\" r=\"~a\" fill=\"none\" stroke=\"~a\" stroke-width=\"2\"/>\n"
-           (fmt cx) (fmt cy) (fmt scale) STROKE-COLOR)
+  (model-boundary-svg! out cx cy scale W H)
   (fprintf out "</svg>\n"))
 
 ;; ---- PNG output (racket/draw) ----
@@ -419,37 +550,87 @@
     (string->number (substring hex 3 5) 16)
     (string->number (substring hex 5 7) 16)))
 
-;; Append a bezier-approximated geodesic arc from z1->z2 to a dc-path%.
-;; Splits arcs > pi/2 into sub-arcs for accuracy.
+;; Append the geodesic from z1 to z2 (in the current model's coordinates)
+;; to a dc-path%. Poincaré and UHP use Bézier-approximated circular arcs;
+;; Klein is a straight line; band walks the UHP geodesic and re-projects.
 (define (add-arc-to-path! path z1 z2 cx cy scale)
+  (case (model-name)
+    [("klein")     (add-line-to-path! path z2 cx cy scale)]
+    [("halfplane") (add-uhp-arc-to-path! path z1 z2 cx cy scale)]
+    [("band")      (add-band-arc-to-path! path z1 z2 cx cy scale)]
+    [else          (add-poincare-arc-to-path! path z1 z2 cx cy scale)]))
+
+(define (add-line-to-path! path z2 cx cy scale)
+  (define p2s (z->screen z2 cx cy scale))
+  (send path line-to (car p2s) (cdr p2s)))
+
+;; Bézier-approximate the arc of a circle (c, r) from z1 to z2.
+;; Splits arcs > π/2 into sub-arcs for accuracy.
+(define (bezier-arc-onto! path c r z1 z2 cx cy scale)
+  (define a1   (angle (- z1 c)))
+  (define a2   (angle (- z2 c)))
+  (define diff (let ([d (- a2 a1)])
+                 (cond [(> d pi)  (- d (* 2 pi))]
+                       [(< d (- pi)) (+ d (* 2 pi))]
+                       [else d])))
+  (define N (max 1 (exact-ceiling (/ (abs diff) (/ pi 2)))))
+  (for ([seg (in-range N)])
+    (define ang0 (+ a1 (* (/ seg N) diff)))
+    (define ang1 (+ a1 (* (/ (+ seg 1) N) diff)))
+    (define dang (- ang1 ang0))
+    (define k    (* (/ 4.0 3.0) (tan (/ dang 4))))
+    (define q1   (+ c (make-polar r ang1)))
+    (define cp0  (+ (+ c (make-polar r ang0)) (* +i k r (make-polar 1 ang0))))
+    (define cp1  (- (+ c (make-polar r ang1)) (* +i k r (make-polar 1 ang1))))
+    (define sq1  (z->screen q1  cx cy scale))
+    (define scp0 (z->screen cp0 cx cy scale))
+    (define scp1 (z->screen cp1 cx cy scale))
+    (send path curve-to
+          (car scp0) (cdr scp0)
+          (car scp1) (cdr scp1)
+          (car sq1)  (cdr sq1))))
+
+(define (add-poincare-arc-to-path! path z1 z2 cx cy scale)
   (if (diameter? z1 z2)
-      (let ([p2s (z->screen z2 cx cy scale)])
-        (send path line-to (car p2s) (cdr p2s)))
+      (add-line-to-path! path z2 cx cy scale)
       (let-values ([(c r) (geodesic-circle z1 z2)])
-        (define a1   (angle (- z1 c)))
-        (define a2   (angle (- z2 c)))
-        (define diff (let ([d (- a2 a1)])
-                       (cond [(> d pi)  (- d (* 2 pi))]
-                             [(< d (- pi)) (+ d (* 2 pi))]
-                             [else d])))
-        (define N (max 1 (exact-ceiling (/ (abs diff) (/ pi 2)))))
-        (for ([seg (in-range N)])
-          (define ang0 (+ a1 (* (/ seg N) diff)))
-          (define ang1 (+ a1 (* (/ (+ seg 1) N) diff)))
-          (define dang (- ang1 ang0))
-          ;; k = (4/3)*tan(dang/4) handles both CCW (dang>0) and CW (dang<0)
-          (define k    (* (/ 4.0 3.0) (tan (/ dang 4))))
-          (define q1   (+ c (make-polar r ang1)))
-          ;; Bezier control points: offset by k*r in tangent direction (i * unit-radial)
-          (define cp0  (+ (+ c (make-polar r ang0)) (* +i k r (make-polar 1 ang0))))
-          (define cp1  (- (+ c (make-polar r ang1)) (* +i k r (make-polar 1 ang1))))
-          (define sq1  (z->screen q1  cx cy scale))
-          (define scp0 (z->screen cp0 cx cy scale))
-          (define scp1 (z->screen cp1 cx cy scale))
-          (send path curve-to
-                (car scp0) (cdr scp0)
-                (car scp1) (cdr scp1)
-                (car sq1)  (cdr sq1))))))
+        (bezier-arc-onto! path c r z1 z2 cx cy scale))))
+
+(define (add-uhp-arc-to-path! path z1 z2 cx cy scale)
+  (define-values (c r vert?) (uhp-geodesic z1 z2))
+  (if vert?
+      (add-line-to-path! path z2 cx cy scale)
+      (bezier-arc-onto! path c r z1 z2 cx cy scale)))
+
+(define (add-band-arc-to-path! path z1 z2 cx cy scale)
+  (define uz1 (band->uhp z1))
+  (define uz2 (band->uhp z2))
+  (define-values (c r vert?) (uhp-geodesic uz1 uz2))
+  (define N 16)
+  (define (emit! t-max)
+    (define x0 (real-part uz1))
+    (define y1 (imag-part uz1))
+    (define y2 (imag-part uz2))
+    (for ([i (in-range 1 (+ N 1))])
+      (define t (/ i (* 1.0 N)))
+      (define uhp-pt (make-rectangular x0 (+ y1 (* (- y2 y1) t))))
+      (define band-pt (- (log uhp-pt) (* +i (/ pi 2))))
+      (define ps (z->screen band-pt cx cy scale))
+      (send path line-to (car ps) (cdr ps))))
+  (cond
+    [vert? (emit! 1)]
+    [else
+     (define cr (real-part c))
+     (define a1 (angle (make-rectangular (- (real-part uz1) cr) (imag-part uz1))))
+     (define a2 (angle (make-rectangular (- (real-part uz2) cr) (imag-part uz2))))
+     (define diff (- a2 a1))
+     (for ([i (in-range 1 (+ N 1))])
+       (define t (/ i (* 1.0 N)))
+       (define theta (+ a1 (* diff t)))
+       (define uhp-pt (+ cr (* r (make-polar 1 theta))))
+       (define band-pt (- (log uhp-pt) (* +i (/ pi 2))))
+       (define ps (z->screen band-pt cx cy scale))
+       (send path line-to (car ps) (cdr ps)))]))
 
 (define (tile-dc-path verts cx cy scale)
   (define n    (length verts))
@@ -474,10 +655,18 @@
   (send dc set-background (hex->color OUTER-COLOR))
   (send dc clear)
 
-  ;; Background disk
+  ;; Model-specific background: fills the visible model region with DISK-COLOR.
   (send dc set-pen no-pen)
   (send dc set-brush (make-object brush% (hex->color DISK-COLOR) 'solid))
-  (send dc draw-ellipse (- cx scale) (- cy scale) (* 2 scale) (* 2 scale))
+  (case (model-name)
+    [("poincare" "klein")
+     (send dc draw-ellipse (- cx scale) (- cy scale) (* 2 scale) (* 2 scale))]
+    [("halfplane")
+     (send dc draw-rectangle 0 0 W cy)]
+    [("band")
+     (define y-top (- cy (* scale (/ pi 2))))
+     (define y-bot (+ cy (* scale (/ pi 2))))
+     (send dc draw-rectangle 0 y-top W (- y-bot y-top))])
 
   ;; Pass 1: fills
   (send dc set-pen no-pen)
@@ -522,10 +711,19 @@
     (send dc set-pen (make-object pen% (hex->color STROKE-COLOR) sw 'solid))
     (send dc draw-path (tile-dc-path (first tile) cx cy scale)))
 
-  ;; Boundary circle
+  ;; Boundary
   (send dc set-pen (make-object pen% (hex->color STROKE-COLOR) 2 'solid))
   (send dc set-brush no-brush)
-  (send dc draw-ellipse (- cx scale) (- cy scale) (* 2 scale) (* 2 scale))
+  (case (model-name)
+    [("poincare" "klein")
+     (send dc draw-ellipse (- cx scale) (- cy scale) (* 2 scale) (* 2 scale))]
+    [("halfplane")
+     (send dc draw-line 0 cy W cy)]
+    [("band")
+     (define y-top (- cy (* scale (/ pi 2))))
+     (define y-bot (+ cy (* scale (/ pi 2))))
+     (send dc draw-line 0 y-top W y-top)
+     (send dc draw-line 0 y-bot W y-bot)])
 
   (send bm save-file file 'png))
 
@@ -533,9 +731,22 @@
 
 (define W     (image-width))
 (define H     (image-height))
-(define cx    (/ W 2.0))
-(define cy    (/ H 2.0))
-(define scale (* 0.47 (min W H)))
+
+;; Per-model viewport. cx, cy is the pixel where the model origin lands.
+;; scale is model-units-per-pixel. Poincaré/Klein show the whole unit disk;
+;; halfplane and band show a fixed rectangular window in model coordinates.
+(define-values (cx cy scale)
+  (case (model-name)
+    [("poincare" "klein")
+     (values (/ W 2.0) (/ H 2.0) (* 0.47 (min W H)))]
+    [("halfplane")
+     ;; Real ∈ [-2.5, 2.5], Imag ∈ [0, 4.5]. Place real axis near bottom.
+     (define s  (min (/ W 5.5) (/ H 5.0)))
+     (values (/ W 2.0) (- H (* 0.08 H)) s)]
+    [("band")
+     ;; Real ∈ [-π, π], Imag ∈ [-π/2, π/2]. Centered.
+     (define s (min (/ W (* 2.1 pi)) (/ H (* 1.05 pi))))
+     (values (/ W 2.0) (/ H 2.0) s)]))
 (define p     (tiling-p))
 (define q     (tiling-q))
 
@@ -578,5 +789,5 @@
    (printf "  ffmpeg -framerate 30 -i ~a/frame_%0~ad.png -c:v libx264 -pix_fmt yuv420p out.mp4~n" dir digits)]
   [else
    (printf "Writing ~a...~n" (image-file))
-   (render-to! (image-file) tiles)
+   (render-to! (image-file) (transform-tiles-for-view tiles))
    (printf "Done.~n")])

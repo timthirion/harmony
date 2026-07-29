@@ -44,6 +44,7 @@ Common options:
 | `-f FILE`, `--file FILE`     | `output.svg`   | Output path. `.png` extension writes PNG          |
 | `--palette NAME`             | `harmony`      | One of: `harmony`, `sunset`, `ocean`, `forest`, `mono` |
 | `--motif NAME`               | (none)         | One of: `nested`, `star`, `curves` — see below   |
+| `--model NAME`               | `poincare`     | Projection: `poincare`, `klein`, `halfplane`, `band` — see Models |
 | `--no-spokes`                | (spokes on)    | Omit the white vertex spokes                      |
 | `--animate MOTION`           | (single frame) | `rotate`, `translate`, or `both` — see Animation |
 | `--frames N`                 | `60`           | Frames per loop (animation only)                  |
@@ -95,6 +96,43 @@ racket harmony.rkt -p 8 -q 3 --depth 5 --palette ocean   --motif curves -d 1200 
 ```
 
 Spokes are automatically suppressed when a motif is active.
+
+## Models
+
+The same `{p,q}` tessellation lives in the abstract hyperbolic plane; each model is one way of drawing it inside a Euclidean picture. Different models highlight different structural features.
+
+<p align="center">
+  <img src="examples/models/model-poincare-7-3.png"  width="45%" alt="{7,3} in Poincaré disk">
+  <img src="examples/models/model-klein-7-3.png"     width="45%" alt="{7,3} in Klein disk">
+</p>
+<p align="center">
+  <img src="examples/models/model-halfplane-7-3.png" width="45%" alt="{7,3} in upper half-plane">
+  <img src="examples/models/model-band-7-3.png"      width="45%" alt="{7,3} in band model">
+</p>
+
+| model       | coordinate transform (from Poincaré `z`)                | geodesics                                          |
+|-------------|---------------------------------------------------------|----------------------------------------------------|
+| `poincare`  | identity                                                | Arcs of circles orthogonal to the boundary         |
+| `klein`     | `2z / (1 + \|z\|²)`                                     | Straight line segments (chords)                    |
+| `halfplane` | `i(1 + z) / (1 − z)` (Cayley transform)                 | Vertical lines or semicircles centered on the real axis |
+| `band`      | `log(halfplane(z)) − iπ/2`                              | Curves (in general); sampled and drawn as polylines |
+
+Reproduce the gallery:
+
+```sh
+racket harmony.rkt -p 7 -q 3 --depth 8 --palette harmony -d 900 900  --model poincare  -f model-poincare.png
+racket harmony.rkt -p 7 -q 3 --depth 6 --palette harmony -d 900 900  --model klein     -f model-klein.png
+racket harmony.rkt -p 7 -q 3 --depth 8 --palette harmony -d 900 900  --model halfplane -f model-halfplane.png
+racket harmony.rkt -p 7 -q 3 --depth 8 --palette harmony -d 1200 600 --model band      -f model-band.png
+```
+
+Notes:
+- `poincare` and `klein` both fit in the unit disk; use square dimensions.
+- `halfplane` fills the upper half-plane; use a rectangular canvas with the real axis at the bottom. The central tile lands at the imaginary unit `i`.
+- `band` uses a wide strip (`|Im| < π/2`). Use a wide rectangular canvas.
+- The Poincaré and half-plane models are *conformal* (angle-preserving); Klein is not (angles distort but geodesics become chords).
+
+Models compose with palettes and motifs. Animations are still Möbius maps applied in the Poincaré disk before projection, so `--animate` also works with `--model` — the tessellation slides or spins in hyperbolic space and you see the effect in whatever model you chose.
 
 ## Animation
 
