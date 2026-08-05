@@ -220,6 +220,30 @@ Both produce an 8"×8" trim area with 0.125" of bleed on every side (10.5" × 10
 
 Color note: palettes are RGB. Print shops will CMYK-convert on their end; deep saturations may shift slightly on paper. If exact colors matter, ask your print shop for their ICC profile and preview locally.
 
+## Companion: interactive viewer
+
+`viewer.rkt` opens a live GUI window on a `{p,q}` tiling. Mouse-drag pans by hyperbolic translation; the scroll wheel adjusts a Euclidean zoom multiplier.
+
+<p align="center">
+  <img src="examples/viewer/viewer-7-3.png" width="45%" alt="viewer snapshot, {7,3} sunset">
+</p>
+
+```sh
+racket viewer.rkt -p 7 -q 3 --palette sunset
+```
+
+The renderer is intentionally simpler than harmony's — Poincaré model only, straight-line polygons (no geodesic arcs), no motifs or highlights — so redraws stay interactive. For the polished still, snapshot the current view with `s` and re-render the same `{p,q}` through `harmony.rkt`.
+
+| control          | action                                                     |
+|------------------|------------------------------------------------------------|
+| Mouse drag       | Pan (hyperbolic translation)                               |
+| Scroll wheel     | Euclidean zoom                                             |
+| `r`              | Reset view                                                 |
+| `s`              | Save `snapshot-<time>.png` to the working directory        |
+| `+` / `-`        | Increase / decrease BFS depth (regenerates tiles)          |
+
+The window also supports `--snapshot FILE` for headless single-frame rendering — the image above was produced with `racket viewer.rkt --snapshot examples/viewer/viewer-7-3.png --size 700 --depth 6 --palette sunset`.
+
 ## Companion: Euclidean tiler
 
 `euclidean.rkt` is a small sibling binary that renders the three regular Euclidean tessellations — the ones harmony refuses to tile because they aren't hyperbolic. Different math (translational lattice, no geodesic arcs, no reflection group), same palettes, same aesthetic.
