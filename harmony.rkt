@@ -5,6 +5,8 @@
 (require "palettes.rkt")
 (require racket/draw)
 
+(define (atanh x) (* 0.5 (log (/ (+ 1 x) (- 1 x)))))
+
 ;; ---- Parameters ----
 
 (define image-width  (make-parameter 800))
@@ -27,6 +29,7 @@
 (define out-dir          (make-parameter "frames"))
 (define dpi              (make-parameter 96))
 (define bleed-inches     (make-parameter 0.0))
+(define pan-spec         (make-parameter #f))   ; "REAL,IMAG" string or #f
 
 (command-line
  #:usage-help "Harmony generates hyperbolic tessellation diagrams"
@@ -70,6 +73,8 @@
   (dpi (string->number N))]
  [("--bleed") IN "Print bleed in inches on each side (default 0)"
   (bleed-inches (string->number IN))]
+ [("--pan") RE-IM "Pan center to disk coord REAL,IMAG before rendering (e.g. 0.3,-0.1)"
+  (pan-spec RE-IM)]
  #:args () (void))
 
 ;; ---- Input validation ----
@@ -870,6 +875,28 @@
    (printf "Done. ffmpeg tip:~n")
    (printf "  ffmpeg -framerate 30 -i ~a/frame_%0~ad.png -c:v libx264 -pix_fmt yuv420p out.mp4~n" dir digits)]
   [else
+   ;; If --pan REAL,IMAG was given, set the view Möbius so the given
+   ;; disk point ends up at visual centre.
+   (define-values (pan-a pan-b)
+     (cond
+       [(pan-spec) =>
+        (lambda (spec)
+          (define parts (string-split spec ","))
+          (unless (= (length parts) 2)
+            (eprintf "--pan expects REAL,IMAG (got ~a)~n" spec)
+            (exit 1))
+          (define c (make-rectangular (string->number (first parts))
+                                      (string->number (second parts))))
+          (define c-mag (magnitude c))
+          (cond
+            [(< c-mag 1e-12) (values 1 0)]
+            [else
+             (define d-mag (* 2 (atanh (min 0.9999999 c-mag))))
+             (define theta (angle c))
+             (values (cosh (/ d-mag 2))
+                     (- (* (sinh (/ d-mag 2)) (make-polar 1 theta))))]))]
+       [else (values 1 0)]))
    (printf "Writing ~a...~n" (image-file))
-   (render-to! (image-file) (transform-tiles-for-view tiles))
+   (parameterize ([VIEW-A pan-a] [VIEW-B pan-b])
+     (render-to! (image-file) (transform-tiles-for-view tiles)))
    (printf "Done.~n")])

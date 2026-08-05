@@ -27,7 +27,7 @@
 
 (define cli-p (make-parameter 7))
 (define cli-q (make-parameter 3))
-(define cli-depth (make-parameter 8))
+(define cli-depth (make-parameter 7))
 (define cli-palette (make-parameter "harmony"))
 (define cli-size (make-parameter 800))
 (define cli-snapshot (make-parameter #f))
@@ -39,7 +39,7 @@
   (cli-p (string->number P))]
  [("-q") Q "Polygons meeting at each vertex (default 3)"
   (cli-q (string->number Q))]
- [("--depth") D "BFS depth (default 8; higher = larger explorable area)"
+ [("--depth") D "BFS depth (default 7; higher = larger explorable area)"
   (cli-depth (string->number D))]
  [("--palette") NAME "Palette name (default harmony)"
   (cli-palette NAME)]
@@ -63,19 +63,46 @@
 (define STATE-VIEWER 0+0i)
 (define VIEWER-CLAMP 0.92)  ; max |viewer|; above this the Möbius destabilizes
 
-(define STATE-TILES '())    ; precomputed once
+(define STATE-TILES '())         ; precomputed once
+(define TILE-CAP    6000)        ; soft cap; regens back off depth until under it
+
+;; Some {p,q} explode tile count exponentially — {8,3} at depth 7 is already
+;; ~30k. To keep the app responsive across all {p,q}, regen backs off depth
+;; until the count fits under TILE-CAP. User can bump depth manually if they
+;; want more; the depth key holds regardless.
 (define (regen-tiles!)
-  (printf "tessellating ~a to depth ~a...~n" (list STATE-P STATE-Q) STATE-DEPTH)
-  (set! STATE-TILES (tessellate STATE-P STATE-Q STATE-DEPTH))
-  (printf "  ~a tiles~n" (length STATE-TILES)))
+  (let loop ([d STATE-DEPTH])
+    (define tiles (tessellate STATE-P STATE-Q d))
+    (cond
+      [(or (<= d 3) (< (length tiles) TILE-CAP))
+       (set! STATE-TILES tiles)
+       (printf "depth ~a → ~a tiles~n" d (length tiles))]
+      [else
+       (loop (- d 1))])))
 
 (regen-tiles!)
 
-(define ACTIVE-PALETTE (lookup-palette (cli-palette)))
+(define PALETTE-CYCLE '("harmony" "sunset" "ocean" "forest" "mono"))
+(define STATE-PALETTE-NAME (cli-palette))
+(define ACTIVE-PALETTE (lookup-palette STATE-PALETTE-NAME))
 (define CENTER-COLOR (palette-center ACTIVE-PALETTE))
 (define STROKE-COLOR (palette-stroke ACTIVE-PALETTE))
 (define DISK-COLOR   (palette-disk   ACTIVE-PALETTE))
 (define OUTER-COLOR  (palette-outer  ACTIVE-PALETTE))
+
+(define (set-palette! name)
+  (set! STATE-PALETTE-NAME name)
+  (set! ACTIVE-PALETTE (lookup-palette name))
+  (set! CENTER-COLOR (palette-center ACTIVE-PALETTE))
+  (set! STROKE-COLOR (palette-stroke ACTIVE-PALETTE))
+  (set! DISK-COLOR   (palette-disk   ACTIVE-PALETTE))
+  (set! OUTER-COLOR  (palette-outer  ACTIVE-PALETTE)))
+
+(define (cycle-palette!)
+  (define idx (or (index-of PALETTE-CYCLE STATE-PALETTE-NAME) -1))
+  (define next (list-ref PALETTE-CYCLE (modulo (+ idx 1) (length PALETTE-CYCLE))))
+  (set-palette! next)
+  (printf "palette: ~a~n" next))
 
 (define (tile-color depth sector)
   (if (= sector -1)
@@ -196,6 +223,20 @@
     (set! STATE-DEPTH new-depth)
     (regen-tiles!)))
 
+;; Print the harmony.rkt command that would reproduce the current view.
+;; The viewer's world position translates to harmony's --pan flag (a
+;; hyperbolic translation applied before rendering).
+(define (print-cli-command!)
+  (define pan-arg
+    (cond
+      [(< (magnitude STATE-VIEWER) 1e-6) ""]
+      [else
+       (format " --pan ~a,~a"
+               (~r (real-part STATE-VIEWER) #:precision '(= 4))
+               (~r (imag-part STATE-VIEWER) #:precision '(= 4)))]))
+  (printf "racket harmony.rkt -p ~a -q ~a --depth ~a --palette ~a -d 1200 1200~a -f out.png~n"
+          STATE-P STATE-Q STATE-DEPTH STATE-PALETTE-NAME pan-arg))
+
 (define (save-snapshot! W H)
   (define bm (make-object bitmap%
                (inexact->exact (ceiling W))
@@ -255,6 +296,11 @@
         [(#\-)
          (adjust-depth! -1)
          (refresh)]
+        [(#\p)
+         (cycle-palette!)
+         (refresh)]
+        [(#\c)
+         (print-cli-command!)]
         [(wheel-up)
          (zoom-by! 1.12)
          (refresh)]
