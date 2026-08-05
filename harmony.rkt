@@ -16,6 +16,8 @@
 (define draw-spokes? (make-parameter #t))
 (define motif-name   (make-parameter #f))
 (define model-name   (make-parameter "poincare"))
+(define highlight-name (make-parameter #f))    ; #f or "fundamental"
+(define label-gens?    (make-parameter #f))
 (define animate-motion   (make-parameter #f))    ; #f, "rotate", "translate", "both"
 (define animate-frames   (make-parameter 60))
 (define animate-turns    (make-parameter 1.0))
@@ -101,6 +103,10 @@
   (motif-name NAME)]
  [("--model") NAME "Projection model: poincare, klein, halfplane, band"
   (model-name NAME)]
+ [("--highlight") NAME "Educational: dim everything except NAME. Values: fundamental"
+  (highlight-name NAME)]
+ [("--label-generators") "Number the p sides of the fundamental polygon 1..p"
+  (label-gens? #t)]
  [("--animate") MOTION "Emit a loop of frames. MOTION: rotate, translate, or both"
   (animate-motion MOTION)]
  [("--frames") N "Number of frames per loop (default 60)"
@@ -144,6 +150,15 @@
            (model-name)
            (string-join VALID-MODELS ", "))
   (exit 1))
+
+(define VALID-HIGHLIGHTS '("fundamental"))
+
+(when (highlight-name)
+  (unless (member (highlight-name) VALID-HIGHLIGHTS)
+    (eprintf "Unknown highlight '~a'. Available: ~a~n"
+             (highlight-name)
+             (string-join VALID-HIGHLIGHTS ", "))
+    (exit 1)))
 
 (define VALID-MOTIONS '("rotate" "translate" "both"))
 
@@ -438,6 +453,13 @@
         (format "L ~a ~a" (fmt (car ps)) (fmt (cdr ps))))
       " ")]))
 
+(define DIM-OPACITY 0.22)
+
+(define (tile-opacity depth)
+  (cond
+    [(and (equal? (highlight-name) "fundamental") (> depth 0)) DIM-OPACITY]
+    [else 1.0]))
+
 (define (polygon-fill-svg verts depth sector cx cy scale)
   (define n   (length verts))
   (define p0s (z->screen (car verts) cx cy scale))
@@ -447,7 +469,11 @@
                               cx cy scale)))
   (define d (string-append (format "M ~a ~a" (fmt (car p0s)) (fmt (cdr p0s)))
                             " " (string-join segs " ") " Z"))
-  (format "  <path d=\"~a\" fill=\"~a\" stroke=\"none\"/>" d (tile-color depth sector)))
+  (define op (tile-opacity depth))
+  (if (= op 1.0)
+      (format "  <path d=\"~a\" fill=\"~a\" stroke=\"none\"/>" d (tile-color depth sector))
+      (format "  <path d=\"~a\" fill=\"~a\" fill-opacity=\"~a\" stroke=\"none\"/>"
+              d (tile-color depth sector) (fmt op))))
 
 (define (polygon-stroke-svg verts depth cx cy scale)
   (define n   (length verts))
@@ -459,8 +485,12 @@
   (define d  (string-append (format "M ~a ~a" (fmt (car p0s)) (fmt (cdr p0s)))
                              " " (string-join segs " ") " Z"))
   (define sw (max 0.3 (- 1.2 (* depth 0.15))))
-  (format "  <path d=\"~a\" fill=\"none\" stroke=\"~a\" stroke-width=\"~a\"/>"
-          d STROKE-COLOR (fmt sw)))
+  (define op (tile-opacity depth))
+  (if (= op 1.0)
+      (format "  <path d=\"~a\" fill=\"none\" stroke=\"~a\" stroke-width=\"~a\"/>"
+              d STROKE-COLOR (fmt sw))
+      (format "  <path d=\"~a\" fill=\"none\" stroke=\"~a\" stroke-width=\"~a\" stroke-opacity=\"~a\"/>"
+              d STROKE-COLOR (fmt sw) (fmt op))))
 
 (define (spokes-svg verts p cx cy scale)
   (define c  (tile-centroid verts p))
@@ -518,6 +548,28 @@
      (fprintf out "  <line x1=\"0\" y1=\"~a\" x2=\"~a\" y2=\"~a\" stroke=\"~a\" stroke-width=\"2\"/>~n"
               (fmt y-bot) W (fmt y-bot) STROKE-COLOR)]))
 
+;; Returns a list of (label-string . (screen-x . screen-y)) for the
+;; fundamental polygon's sides in the current view. Label i is placed near
+;; side i, offset from the side's Euclidean midpoint toward the tile
+;; centroid so the number sits just inside the tile.
+(define (generator-label-positions tiles p cx cy scale)
+  (define fund (findf (lambda (t) (= 0 (second t))) tiles))
+  (cond
+    [(not fund) '()]
+    [else
+     (define verts (first fund))
+     (define centroid (/ (apply + verts) p))
+     (for/list ([i (in-range p)])
+       (define v1  (list-ref verts i))
+       (define v2  (list-ref verts (modulo (+ i 1) p)))
+       (define mid (/ (+ v1 v2) 2))
+       (define pos (+ (* 0.78 mid) (* 0.22 centroid)))
+       (define ps  (z->screen pos cx cy scale))
+       (cons (number->string (+ i 1)) ps))]))
+
+(define (label-font-size scale)
+  (max 12 (min 40 (inexact->exact (round (* scale 0.055))))))
+
 (define (write-svg! tiles p cx cy scale W H out)
   (define sorted (sort tiles > #:key second))
   (fprintf out "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n")
@@ -540,6 +592,12 @@
   (for ([tile sorted])
     (fprintf out "~a\n" (polygon-stroke-svg (first tile) (second tile) cx cy scale)))
   (model-boundary-svg! out cx cy scale W H)
+  ;; Pass 4: generator labels
+  (when (label-gens?)
+    (define fs (label-font-size scale))
+    (for ([lbl (in-list (generator-label-positions tiles p cx cy scale))])
+      (fprintf out "  <text x=\"~a\" y=\"~a\" font-family=\"sans-serif\" font-size=\"~a\" font-weight=\"bold\" fill=\"~a\" text-anchor=\"middle\" dominant-baseline=\"central\">~a</text>~n"
+               (fmt (cadr lbl)) (fmt (cddr lbl)) fs STROKE-COLOR (car lbl))))
   (fprintf out "</svg>\n"))
 
 ;; ---- PNG output (racket/draw) ----
@@ -671,8 +729,10 @@
   ;; Pass 1: fills
   (send dc set-pen no-pen)
   (for ([tile (in-list (sort tiles > #:key second))])
+    (send dc set-alpha (tile-opacity (second tile)))
     (send dc set-brush (make-object brush% (hex->color (tile-color (second tile) (third tile))) 'solid))
     (send dc draw-path (tile-dc-path (first tile) cx cy scale)))
+  (send dc set-alpha 1.0)
 
   ;; Pass 2: spokes (suppressed when motif is active)
   (when (and (draw-spokes?) (not ACTIVE-MOTIF))
@@ -708,8 +768,10 @@
   (for ([tile (in-list (sort tiles > #:key second))])
     (define depth (second tile))
     (define sw    (max 0.3 (- 1.2 (* depth 0.15))))
+    (send dc set-alpha (tile-opacity depth))
     (send dc set-pen (make-object pen% (hex->color STROKE-COLOR) sw 'solid))
     (send dc draw-path (tile-dc-path (first tile) cx cy scale)))
+  (send dc set-alpha 1.0)
 
   ;; Boundary
   (send dc set-pen (make-object pen% (hex->color STROKE-COLOR) 2 'solid))
@@ -724,6 +786,19 @@
      (define y-bot (+ cy (* scale (/ pi 2))))
      (send dc draw-line 0 y-top W y-top)
      (send dc draw-line 0 y-bot W y-bot)])
+
+  ;; Generator labels
+  (when (label-gens?)
+    (define fs (label-font-size scale))
+    (define fnt (make-font #:size fs #:family 'swiss #:weight 'bold))
+    (send dc set-font fnt)
+    (send dc set-text-foreground (hex->color STROKE-COLOR))
+    (for ([lbl (in-list (generator-label-positions tiles p cx cy scale))])
+      (define s (car lbl))
+      (define-values (tw th td ta) (send dc get-text-extent s fnt))
+      (send dc draw-text s
+            (- (cadr lbl) (/ tw 2))
+            (- (cddr lbl) (/ th 2)))))
 
   (send bm save-file file 'png))
 
