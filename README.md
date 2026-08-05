@@ -194,6 +194,28 @@ Animation notes:
 - Increase `--depth` beyond your usual static value. When tiles slide across the disk, previously off-screen tiles rotate into view and would otherwise "pop in" as gaps. Depth 6–8 works well for `{7,3}`.
 - Each frame takes about the same time as a single-frame render. 60 frames at depth 7 is ~15 s on a modern laptop.
 
+## Companion: Euclidean tiler
+
+`euclidean.rkt` is a small sibling binary that renders the three regular Euclidean tessellations — the ones harmony refuses to tile because they aren't hyperbolic. Different math (translational lattice, no geodesic arcs, no reflection group), same palettes, same aesthetic.
+
+<p align="center">
+  <img src="examples/euclidean/hex-6-3.png"      width="30%" alt="{6,3} hexagonal tiling">
+  <img src="examples/euclidean/square-4-4.png"   width="30%" alt="{4,4} square tiling">
+  <img src="examples/euclidean/triangle-3-6.png" width="30%" alt="{3,6} triangular tiling">
+</p>
+
+Three tilings, one binary:
+
+```sh
+racket euclidean.rkt --tiling hex      --extent 8  -d 1000 1000 --palette harmony -f hex.png
+racket euclidean.rkt --tiling square   --extent 8  -d 1000 1000 --palette sunset  -f square.png
+racket euclidean.rkt --tiling triangle --extent 10 -d 1000 1000 --palette ocean   -f triangle.png
+```
+
+`--extent N` sets the lattice half-width (how many rings from the origin). Because these tilings are strictly translational there's no natural "depth from origin" the way harmony has — coloring uses lattice-distance from origin and a three-family cycle indexed by `(n1 − n2) mod 3` (hex, triangle) or `(n1 + n2) mod 3` (square), which gives the classic hexagonal three-colour theorem for hex tilings and diagonal stripes for the others.
+
+Palettes are shared with harmony via `palettes.rkt`, so `--palette harmony|sunset|ocean|forest|mono` all work.
+
 ## How it works
 
 - `hyperbolic.rkt` — geometry: computes the fundamental polygon's Euclidean circumradius `sqrt(cos(π/p+π/q)/cos(π/p−π/q))`, the geodesic circle through two disk points (via inversion in the unit circle), and reflections across geodesics. Tessellation is a BFS: from the central tile, each side reflects the tile to a neighbor; duplicates are pruned by rounded centroid. Each tile carries the ordered list of reflection axes that produced it, so a motif point can be replayed through the same sequence.
