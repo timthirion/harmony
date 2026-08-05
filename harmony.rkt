@@ -25,6 +25,8 @@
 (define animate-dist     (make-parameter 0.7))
 (define animate-dir      (make-parameter 0.0))   ; degrees
 (define out-dir          (make-parameter "frames"))
+(define dpi              (make-parameter 96))
+(define bleed-inches     (make-parameter 0.0))
 
 (command-line
  #:usage-help "Harmony generates hyperbolic tessellation diagrams"
@@ -64,6 +66,10 @@
   (animate-dir (string->number DEG))]
  [("--out-dir") PATH "Directory to write frames into (default 'frames')"
   (out-dir PATH)]
+ [("--dpi") N "Output resolution in pixels-per-inch for PNG (default 96)"
+  (dpi (string->number N))]
+ [("--bleed") IN "Print bleed in inches on each side (default 0)"
+  (bleed-inches (string->number IN))]
  #:args () (void))
 
 ;; ---- Input validation ----
@@ -429,7 +435,7 @@
                               cx cy scale)))
   (define d  (string-append (format "M ~a ~a" (fmt (car p0s)) (fmt (cdr p0s)))
                              " " (string-join segs " ") " Z"))
-  (define sw (max 0.3 (- 1.2 (* depth 0.15))))
+  (define sw (* STROKE-SCALE (max 0.3 (- 1.2 (* depth 0.15)))))
   (define op (tile-opacity depth))
   (if (= op 1.0)
       (format "  <path d=\"~a\" fill=\"none\" stroke=\"~a\" stroke-width=\"~a\"/>"
@@ -445,8 +451,8 @@
                  (format "M ~a ~a L ~a ~a"
                          (fmt (car cs)) (fmt (cdr cs))
                          (fmt (car vs)) (fmt (cdr vs)))))
-  (format "  <path d=\"~a\" fill=\"none\" stroke=\"~a\" stroke-width=\"0.5\" stroke-opacity=\"0.7\"/>"
-          (string-join segs " ") SPOKE-COLOR))
+  (format "  <path d=\"~a\" fill=\"none\" stroke=\"~a\" stroke-width=\"~a\" stroke-opacity=\"0.7\"/>"
+          (string-join segs " ") SPOKE-COLOR (fmt (* STROKE-SCALE 0.5))))
 
 (define (motif-svg polylines cx cy scale)
   (define paths
@@ -459,8 +465,8 @@
            (format "L ~a ~a" (fmt (car ps)) (fmt (cdr ps))))
          " "))
       (format "M ~a ~a ~a" (fmt (car fp)) (fmt (cdr fp)) moves)))
-  (format "  <path d=\"~a\" fill=\"none\" stroke=\"~a\" stroke-width=\"1.4\" stroke-linejoin=\"round\" stroke-linecap=\"round\"/>"
-          (string-join paths " ") STROKE-COLOR))
+  (format "  <path d=\"~a\" fill=\"none\" stroke=\"~a\" stroke-width=\"~a\" stroke-linejoin=\"round\" stroke-linecap=\"round\"/>"
+          (string-join paths " ") STROKE-COLOR (fmt (* STROKE-SCALE 1.4))))
 
 (define (model-background-svg! out cx cy scale W H)
   (case (model-name)
@@ -478,20 +484,21 @@
               (fmt y-top) W (fmt (- y-bot y-top)) DISK-COLOR)]))
 
 (define (model-boundary-svg! out cx cy scale W H)
+  (define bw (fmt (* STROKE-SCALE 2)))
   (case (model-name)
     [("poincare" "klein")
-     (fprintf out "  <circle cx=\"~a\" cy=\"~a\" r=\"~a\" fill=\"none\" stroke=\"~a\" stroke-width=\"2\"/>~n"
-              (fmt cx) (fmt cy) (fmt scale) STROKE-COLOR)]
+     (fprintf out "  <circle cx=\"~a\" cy=\"~a\" r=\"~a\" fill=\"none\" stroke=\"~a\" stroke-width=\"~a\"/>~n"
+              (fmt cx) (fmt cy) (fmt scale) STROKE-COLOR bw)]
     [("halfplane")
-     (fprintf out "  <line x1=\"0\" y1=\"~a\" x2=\"~a\" y2=\"~a\" stroke=\"~a\" stroke-width=\"2\"/>~n"
-              (fmt cy) W (fmt cy) STROKE-COLOR)]
+     (fprintf out "  <line x1=\"0\" y1=\"~a\" x2=\"~a\" y2=\"~a\" stroke=\"~a\" stroke-width=\"~a\"/>~n"
+              (fmt cy) W (fmt cy) STROKE-COLOR bw)]
     [("band")
      (define y-top (- cy (* scale (/ pi 2))))
      (define y-bot (+ cy (* scale (/ pi 2))))
-     (fprintf out "  <line x1=\"0\" y1=\"~a\" x2=\"~a\" y2=\"~a\" stroke=\"~a\" stroke-width=\"2\"/>~n"
-              (fmt y-top) W (fmt y-top) STROKE-COLOR)
-     (fprintf out "  <line x1=\"0\" y1=\"~a\" x2=\"~a\" y2=\"~a\" stroke=\"~a\" stroke-width=\"2\"/>~n"
-              (fmt y-bot) W (fmt y-bot) STROKE-COLOR)]))
+     (fprintf out "  <line x1=\"0\" y1=\"~a\" x2=\"~a\" y2=\"~a\" stroke=\"~a\" stroke-width=\"~a\"/>~n"
+              (fmt y-top) W (fmt y-top) STROKE-COLOR bw)
+     (fprintf out "  <line x1=\"0\" y1=\"~a\" x2=\"~a\" y2=\"~a\" stroke=\"~a\" stroke-width=\"~a\"/>~n"
+              (fmt y-bot) W (fmt y-bot) STROKE-COLOR bw)]))
 
 ;; Returns a list of (label-string . (screen-x . screen-y)) for the
 ;; fundamental polygon's sides in the current view. Label i is placed near
@@ -648,15 +655,21 @@
   (send path close)
   path)
 
-(define (write-png! tiles p cx cy scale W H file)
-  (define bm (make-object bitmap% W H))
-  (define dc (new bitmap-dc% [bitmap bm]))
+;; Shared drawing routine for any dc<%> (bitmap-dc% or pdf-dc%). The dc is
+;; expected to be freshly-configured (any prior content is cleared for raster
+;; targets via set-background/clear at the start).
+(define (draw-tessellation! dc tiles p cx cy scale W H)
   (define no-pen   (make-object pen%   "black" 0 'transparent))
   (define no-brush (make-object brush% "black" 'transparent))
 
   (send dc set-smoothing 'aligned)
+  ;; Clear to OUTER-COLOR. For pdf-dc%, set-background/clear is a no-op,
+  ;; so we paint a full-canvas rectangle instead.
   (send dc set-background (hex->color OUTER-COLOR))
   (send dc clear)
+  (send dc set-pen no-pen)
+  (send dc set-brush (make-object brush% (hex->color OUTER-COLOR) 'solid))
+  (send dc draw-rectangle 0 0 W H)
 
   ;; Model-specific background: fills the visible model region with DISK-COLOR.
   (send dc set-pen no-pen)
@@ -681,7 +694,7 @@
 
   ;; Pass 2: spokes (suppressed when motif is active)
   (when (and (draw-spokes?) (not ACTIVE-MOTIF))
-    (send dc set-pen (make-object pen% (hex->color SPOKE-COLOR) 1 'solid))
+    (send dc set-pen (make-object pen% (hex->color SPOKE-COLOR) (* STROKE-SCALE 1) 'solid))
     (send dc set-brush no-brush)
     (for ([tile (in-list tiles)])
       (define c  (tile-centroid (first tile) p))
@@ -694,7 +707,7 @@
   (when ACTIVE-MOTIF
     (define motif-lines (ACTIVE-MOTIF p (tiling-q)))
     (define motif-pen
-      (new pen% [color (hex->color STROKE-COLOR)] [width 1.4] [style 'solid]
+      (new pen% [color (hex->color STROKE-COLOR)] [width (* STROKE-SCALE 1.4)] [style 'solid]
                 [cap 'round] [join 'round]))
     (send dc set-pen motif-pen)
     (send dc set-brush no-brush)
@@ -712,14 +725,14 @@
   (send dc set-brush no-brush)
   (for ([tile (in-list (sort tiles > #:key second))])
     (define depth (second tile))
-    (define sw    (max 0.3 (- 1.2 (* depth 0.15))))
+    (define sw    (* STROKE-SCALE (max 0.3 (- 1.2 (* depth 0.15)))))
     (send dc set-alpha (tile-opacity depth))
     (send dc set-pen (make-object pen% (hex->color STROKE-COLOR) sw 'solid))
     (send dc draw-path (tile-dc-path (first tile) cx cy scale)))
   (send dc set-alpha 1.0)
 
   ;; Boundary
-  (send dc set-pen (make-object pen% (hex->color STROKE-COLOR) 2 'solid))
+  (send dc set-pen (make-object pen% (hex->color STROKE-COLOR) (* STROKE-SCALE 2) 'solid))
   (send dc set-brush no-brush)
   (case (model-name)
     [("poincare" "klein")
@@ -743,29 +756,75 @@
       (define-values (tw th td ta) (send dc get-text-extent s fnt))
       (send dc draw-text s
             (- (cadr lbl) (/ tw 2))
-            (- (cddr lbl) (/ th 2)))))
+            (- (cddr lbl) (/ th 2))))))
 
+(define (write-png! tiles p cx cy scale W H file)
+  (define bm (make-object bitmap%
+               (inexact->exact (ceiling W))
+               (inexact->exact (ceiling H))))
+  (define dc (new bitmap-dc% [bitmap bm]))
+  (draw-tessellation! dc tiles p cx cy scale W H)
   (send bm save-file file 'png))
+
+(define (write-pdf! tiles p cx cy scale W H file)
+  ;; racket/draw's pdf-dc% draws with 1 unit = 1/96 inch, but the constructor's
+  ;; width/height are in points (1/72 inch), so the page size is W * 72/96.
+  (define dc (new pdf-dc%
+                  [interactive #f]
+                  [use-paper-bbox #f]
+                  [width  (* W 72/96)]
+                  [height (* H 72/96)]
+                  [output file]))
+  (send dc start-doc "harmony")
+  (send dc start-page)
+  (draw-tessellation! dc tiles p cx cy scale W H)
+  (send dc end-page)
+  (send dc end-doc))
 
 ;; ---- Main ----
 
-(define W     (image-width))
-(define H     (image-height))
+;; Detect the target output format from the file extension.
+(define OUTPUT-FMT
+  (cond
+    [(string-suffix? (image-file) ".pdf") 'pdf]
+    [(string-suffix? (image-file) ".png") 'png]
+    [else                                  'svg]))
 
-;; Per-model viewport. cx, cy is the pixel where the model origin lands.
-;; scale is model-units-per-pixel. Poincaré/Klein show the whole unit disk;
-;; halfplane and band show a fixed rectangular window in model coordinates.
+;; All drawing is done in "logical pixels at 96 DPI". PNG scales those up
+;; to real pixels for high-DPI output. SVG and PDF stay in logical units:
+;; SVG is vector and viewers pick their own DPI; racket/draw's pdf-dc%
+;; already treats drawing coordinates as 1/96 inch (converts to points at
+;; the page level via 72/96 = 0.75).
+(define DPI-SCALE (/ (dpi) 96.0))
+
+(define OUTPUT-COORD-SCALE
+  (case OUTPUT-FMT
+    [(png) DPI-SCALE]
+    [else  1.0]))
+
+(define STROKE-SCALE OUTPUT-COORD-SCALE)
+
+(define TRIM-W   (* (image-width)  OUTPUT-COORD-SCALE))
+(define TRIM-H   (* (image-height) OUTPUT-COORD-SCALE))
+(define BLEED-PX (* (bleed-inches) 96 OUTPUT-COORD-SCALE))
+(define W        (+ TRIM-W (* 2 BLEED-PX)))
+(define H        (+ TRIM-H (* 2 BLEED-PX)))
+
+;; Per-model viewport. cx, cy is the canvas-space point where the model
+;; origin lands. scale is model-units-per-canvas-unit. The tessellation is
+;; sized to the TRIM area and centred within the (possibly bleeded) CANVAS
+;; so the model boundary sits at the trim line.
 (define-values (cx cy scale)
   (case (model-name)
     [("poincare" "klein")
-     (values (/ W 2.0) (/ H 2.0) (* 0.47 (min W H)))]
+     (values (/ W 2.0) (/ H 2.0) (* 0.47 (min TRIM-W TRIM-H)))]
     [("halfplane")
-     ;; Real ∈ [-2.5, 2.5], Imag ∈ [0, 4.5]. Place real axis near bottom.
-     (define s  (min (/ W 5.5) (/ H 5.0)))
-     (values (/ W 2.0) (- H (* 0.08 H)) s)]
+     ;; Real ∈ [-2.5, 2.5], Imag ∈ [0, 4.5]. Place real axis near trim bottom.
+     (define s  (min (/ TRIM-W 5.5) (/ TRIM-H 5.0)))
+     (values (/ W 2.0) (- H BLEED-PX (* 0.08 TRIM-H)) s)]
     [("band")
-     ;; Real ∈ [-π, π], Imag ∈ [-π/2, π/2]. Centered.
-     (define s (min (/ W (* 2.1 pi)) (/ H (* 1.05 pi))))
+     ;; Real ∈ [-π, π], Imag ∈ [-π/2, π/2]. Centred.
+     (define s (min (/ TRIM-W (* 2.1 pi)) (/ TRIM-H (* 1.05 pi))))
      (values (/ W 2.0) (/ H 2.0) s)]))
 (define p     (tiling-p))
 (define q     (tiling-q))
@@ -778,6 +837,9 @@
   (cond
     [(string-suffix? filename ".png")
      (write-png! tiles-for-frame p cx cy scale W H filename)
+     (void)]
+    [(string-suffix? filename ".pdf")
+     (write-pdf! tiles-for-frame p cx cy scale W H filename)
      (void)]
     [else
      (call-with-output-file filename #:exists 'replace

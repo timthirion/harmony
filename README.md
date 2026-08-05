@@ -51,6 +51,8 @@ Common options:
 | `--animate MOTION`           | (single frame) | `rotate`, `translate`, or `both` — see Animation |
 | `--frames N`                 | `60`           | Frames per loop (animation only)                  |
 | `--out-dir PATH`             | `frames`       | Directory for animation frames                    |
+| `--dpi N`                    | `96`           | Output resolution for PNG (see Printing)          |
+| `--bleed IN`                 | `0`            | Print bleed in inches on each side                |
 
 Invalid `{p,q}` (spherical or Euclidean) is rejected with a message.
 
@@ -193,6 +195,30 @@ ffmpeg -framerate 20 -i frames/frame_%04d.png -c:v libx264 -pix_fmt yuv420p out.
 Animation notes:
 - Increase `--depth` beyond your usual static value. When tiles slide across the disk, previously off-screen tiles rotate into view and would otherwise "pop in" as gaps. Depth 6–8 works well for `{7,3}`.
 - Each frame takes about the same time as a single-frame render. 60 frames at depth 7 is ~15 s on a modern laptop.
+
+## Printing
+
+Harmony can produce high-DPI PNG, vector PDF, and print-safe canvases with bleed.
+
+**Units and DPI.** `-d W H` is stated in "logical pixels at 96 DPI" (so `-d 800 800` means an 8.33" image at screen resolution). Three flags then adapt the output:
+
+- **`--dpi N`** (PNG only) scales both pixel dimensions and stroke widths by `N/96`. Everything looks the same as at 96 DPI, just crisper on paper. E.g. `-d 768 768 --dpi 300` → 2400×2400 pixel PNG, an 8"×8" print.
+- **`--bleed IN`** adds `IN` inches of bleed on every side. The tessellation stays sized to the trim area (unaffected) and the bleed is filled with the palette's outer color, so a printer trimming slightly off the mark still cuts through colored material.
+- **`-f out.pdf`** switches to PDF output. The page size is `(-d W)/96 × (-d H)/96` inches (harmony uses `racket/draw`'s `pdf-dc%`, which pairs 1/96" drawing units with a 72-point page). `--dpi` is a no-op for PDF because vectors render at whatever DPI the printer/viewer wants; `--bleed` still applies.
+
+**Worked example — 8"×8" poster at 300 DPI:**
+
+```sh
+# PNG
+racket harmony.rkt -p 7 -q 3 --depth 8 --palette harmony -d 768 768 --dpi 300 --bleed 0.125 -f poster.png
+
+# PDF (vector, resolution-independent)
+racket harmony.rkt -p 7 -q 3 --depth 8 --palette harmony -d 768 768 --bleed 0.125 -f poster.pdf
+```
+
+Both produce an 8"×8" trim area with 0.125" of bleed on every side (10.5" × 10.5" total when trimmed for standard bleed). The PNG is 2500×2500 pixels; the PDF is a 648×648-point page (about 9"×9" including bleed). See [`examples/print/poster-4in-7-3.pdf`](examples/print/poster-4in-7-3.pdf) for a smaller sample.
+
+Color note: palettes are RGB. Print shops will CMYK-convert on their end; deep saturations may shift slightly on paper. If exact colors matter, ask your print shop for their ICC profile and preview locally.
 
 ## Companion: Euclidean tiler
 
