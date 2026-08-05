@@ -3,17 +3,21 @@
 
 ;; viewer.rkt — interactive Poincaré-disk viewer for {p,q} tessellations.
 ;;
-;; Runs a GUI window over the tiling produced by harmony's tessellate.
-;; Mouse-drag pans the view by hyperbolic translation, scroll-wheel adjusts
-;; a Euclidean zoom multiplier, and a few keyboard shortcuts round it out.
+;; Model:
+;;   - Tessellate ONCE at startup, at a generous depth (default 8 → ~11k
+;;     tiles for {7,3}). This is the "world"; it never changes.
+;;   - Track a single piece of state: the viewer's world position `c`.
+;;     Pans update `c` by a hyperbolic translation; magnitude is clamped
+;;     to a safe range so the Möbius stays numerically stable.
+;;   - On each frame, apply the Möbius sending `c` → 0 to every stored
+;;     vertex and render.
 ;;
-;; The renderer is intentionally simpler than harmony.rkt's:
-;;   - Poincaré model only (no Klein/UHP/band).
-;;   - Straight-line polygons (no geodesic arcs). Fast enough for interactive
-;;     redraws at typical tessellation depths.
-;;   - No motifs, spokes, highlights, or animation.
-;; For those, produce a snapshot with 's' and render the same {p,q} through
-;; harmony.rkt.
+;; The tessellation is bounded (you can only wander so far from origin
+;; before hitting the clamp), but within that region: no drift, no flicker,
+;; no doubled geometry, no accumulated Möbius. It's the correct trade-off
+;; for a hobby viewer — a full "truly endless" viewer needs a graph-based
+;; tessellation with boundary-crossing frame swaps, which is a substantial
+;; refactor. See MagicTile or HyperRogue for that.
 
 (require racket/draw)
 (require "hyperbolic.rkt")
@@ -23,7 +27,7 @@
 
 (define cli-p (make-parameter 7))
 (define cli-q (make-parameter 3))
-(define cli-depth (make-parameter 6))
+(define cli-depth (make-parameter 8))
 (define cli-palette (make-parameter "harmony"))
 (define cli-size (make-parameter 800))
 (define cli-snapshot (make-parameter #f))
@@ -35,7 +39,7 @@
   (cli-p (string->number P))]
  [("-q") Q "Polygons meeting at each vertex (default 3)"
   (cli-q (string->number Q))]
- [("--depth") D "BFS depth (default 6; bump for zoomed-in detail)"
+ [("--depth") D "BFS depth (default 8; higher = larger explorable area)"
   (cli-depth (string->number D))]
  [("--palette") NAME "Palette name (default harmony)"
   (cli-palette NAME)]
@@ -55,14 +59,15 @@
 (define STATE-P     (cli-p))
 (define STATE-Q     (cli-q))
 (define STATE-DEPTH (cli-depth))
-(define STATE-A     1+0i)     ; Möbius a
-(define STATE-B     0+0i)     ; Möbius b
-(define STATE-ZOOM  1.0)      ; Euclidean scale multiplier
-(define STATE-TILES '())      ; cached tessellation
+(define STATE-ZOOM  1.0)
+(define STATE-VIEWER 0+0i)
+(define VIEWER-CLAMP 0.92)  ; max |viewer|; above this the Möbius destabilizes
 
+(define STATE-TILES '())    ; precomputed once
 (define (regen-tiles!)
+  (printf "tessellating ~a to depth ~a...~n" (list STATE-P STATE-Q) STATE-DEPTH)
   (set! STATE-TILES (tessellate STATE-P STATE-Q STATE-DEPTH))
-  (printf "depth ~a → ~a tiles~n" STATE-DEPTH (length STATE-TILES)))
+  (printf "  ~a tiles~n" (length STATE-TILES)))
 
 (regen-tiles!)
 
@@ -78,7 +83,7 @@
       (let* ([families (palette-families ACTIVE-PALETTE)]
              [family   (modulo sector 3)]
              [pal      (vector-ref families family)]
-             [idx      (min depth (- (vector-length pal) 1))])
+             [idx      (min (max 0 depth) (- (vector-length pal) 1))])
         (vector-ref pal idx))))
 
 (define (hex->color hex)
@@ -87,10 +92,24 @@
     (string->number (substring hex 3 5) 16)
     (string->number (substring hex 5 7) 16)))
 
-;; ---- Rendering ----
+;; ---- Möbius helpers ----
 
-;; Möbius view transform of a disk point.
-(define (view-apply z) (mobius-apply STATE-A STATE-B z))
+(define (atanh x) (* 0.5 (log (/ (+ 1 x) (- 1 x)))))
+
+;; Möbius sending c → 0. Uses the (cosh d/2, ±sinh d/2 · e^{iθ}) form which
+;; is more numerically stable at moderate translations than the 1/√(1-|c|²)
+;; normalisation.
+(define (translation-from c)
+  (define c-mag (magnitude c))
+  (cond
+    [(< c-mag 1e-12) (values 1 0)]
+    [else
+     (define d (* 2 (atanh (min 0.9999999 c-mag))))
+     (define theta (angle c))
+     (values (cosh (/ d 2))
+             (- (* (sinh (/ d 2)) (make-polar 1 theta))))]))
+
+;; ---- Rendering ----
 
 (define (paint-canvas! dc W H)
   (define cx (/ W 2.0))
@@ -103,68 +122,70 @@
   (send dc set-background (hex->color OUTER-COLOR))
   (send dc clear)
 
-  ;; Poincaré disk background
   (send dc set-pen no-pen)
   (send dc set-brush (make-object brush% (hex->color DISK-COLOR) 'solid))
   (send dc draw-ellipse (- cx scale) (- cy scale) (* 2 scale) (* 2 scale))
 
-  ;; Precompute transformed vertices for each tile so we don't reapply the
-  ;; Möbius per edge.
-  (define transformed
-    (for/list ([tile (in-list STATE-TILES)])
-      (list (map view-apply (first tile))
-            (second tile)
-            (third tile))))
+  (define-values (va vb) (translation-from STATE-VIEWER))
+  (define (v->screen z)
+    (define zt (mobius-apply va vb z))
+    (make-object point%
+      (+ cx (* scale (real-part zt)))
+      (- cy (* scale (imag-part zt)))))
 
-  ;; Pass 1: solid polygon fills, deepest first (so shallow paint on top).
+  ;; Cull tiles whose visual centroid is essentially at the boundary — they
+  ;; are sub-pixel and dominate the render time.
+  (define visible
+    (for/list ([tile (in-list STATE-TILES)]
+               #:when (let ([ctr (mobius-apply va vb
+                                               (/ (apply + (first tile)) STATE-P))])
+                        (< (magnitude ctr) 0.998)))
+      tile))
+
+  ;; Deepest first so shallow tiles paint on top.
   (send dc set-pen no-pen)
-  (for ([tile (in-list (sort transformed > #:key second))])
+  (for ([tile (in-list (sort visible > #:key second))])
     (define depth (second tile))
     (define sector (third tile))
-    (define pts (for/list ([z (in-list (first tile))])
-                  (define x (+ cx (* scale (real-part z))))
-                  (define y (- cy (* scale (imag-part z))))
-                  (make-object point% x y)))
-    (send dc set-brush (make-object brush% (hex->color (tile-color depth sector)) 'solid))
-    (send dc draw-polygon pts))
+    (send dc set-brush
+          (make-object brush% (hex->color (tile-color depth sector)) 'solid))
+    (send dc draw-polygon (map v->screen (first tile))))
 
-  ;; Pass 2: thin outlines (single pass over all tiles).
   (send dc set-brush no-brush)
   (send dc set-pen (make-object pen% (hex->color STROKE-COLOR) 0.6 'solid))
-  (for ([tile (in-list transformed)])
-    (define pts (for/list ([z (in-list (first tile))])
-                  (define x (+ cx (* scale (real-part z))))
-                  (define y (- cy (* scale (imag-part z))))
-                  (make-object point% x y)))
-    (send dc draw-polygon pts))
+  (for ([tile (in-list visible)])
+    (send dc draw-polygon (map v->screen (first tile))))
 
-  ;; Boundary circle
   (send dc set-pen (make-object pen% (hex->color STROKE-COLOR) 2 'solid))
   (send dc set-brush no-brush)
   (send dc draw-ellipse (- cx scale) (- cy scale) (* 2 scale) (* 2 scale)))
 
 ;; ---- Interaction ----
 
-(define (reset-view!)
-  (set! STATE-A 1+0i)
-  (set! STATE-B 0+0i)
-  (set! STATE-ZOOM 1.0))
-
-;; Apply a hyperbolic translation of screen delta (dx, dy) at the given
-;; pixel scale, composing with the current view.
+;; Screen delta (dx, dy) at pixel scale s becomes a hyperbolic translation
+;; of the viewer position by the *negation* of the disk-space delta (drag
+;; right = viewer moves left = world content shifts right visually). Clamps
+;; the result to keep the Möbius from exploding at the boundary.
 (define (pan! dx dy scale)
-  (define d-real (/ dx scale))
-  (define d-imag (/ (- dy) scale))    ; screen y is flipped
-  (define d (sqrt (+ (sqr d-real) (sqr d-imag))))
-  (when (> d 1e-9)
-    (define theta (angle (make-rectangular d-real d-imag)))
-    (define a-delta (cosh (/ d 2)))
-    (define b-delta (* (sinh (/ d 2)) (make-polar 1 theta)))
-    ;; Compose (a-delta, b-delta) ∘ (STATE-A, STATE-B) in SU(1,1).
-    (define a-new (+ (* a-delta STATE-A) (* b-delta (conjugate STATE-B))))
-    (define b-new (+ (* a-delta STATE-B) (* b-delta (conjugate STATE-A))))
-    (set! STATE-A a-new)
-    (set! STATE-B b-new)))
+  (define delta (make-rectangular (/ dx scale) (/ (- dy) scale)))
+  (define d-mag (magnitude delta))
+  (when (> d-mag 1e-9)
+    (define shift-mag (min 0.85 d-mag))
+    (define shift (if (= shift-mag d-mag) delta (* delta (/ shift-mag d-mag))))
+    ;; c_new = (c - shift) / (1 - conj(shift) * c) — hyperbolic translation.
+    (define candidate
+      (/ (- STATE-VIEWER shift)
+         (- 1 (* (conjugate shift) STATE-VIEWER))))
+    ;; Clamp magnitude.
+    (define cand-mag (magnitude candidate))
+    (set! STATE-VIEWER
+          (if (< cand-mag VIEWER-CLAMP)
+              candidate
+              (* candidate (/ VIEWER-CLAMP cand-mag))))))
+
+(define (reset-view!)
+  (set! STATE-VIEWER 0+0i)
+  (set! STATE-ZOOM 1.0))
 
 (define (zoom-by! factor)
   (set! STATE-ZOOM (max 0.2 (min 20.0 (* STATE-ZOOM factor)))))
@@ -241,20 +262,8 @@
          (zoom-by! (/ 1.0 1.12))
          (refresh)]))))
 
-(define frame
-  (new frame%
-       [label (format "harmony viewer — {~a,~a}" STATE-P STATE-Q)]
-       [width  (cli-size)]
-       [height (cli-size)]))
-
-(define canvas
-  (new harmony-canvas%
-       [parent frame]
-       [style '()]))
-
 (cond
   [(cli-snapshot)
-   ;; Headless: render to a bitmap and exit without opening the window.
    (define w (cli-size))
    (define h (cli-size))
    (define bm (make-object bitmap%
@@ -265,5 +274,14 @@
    (send bm save-file (cli-snapshot) 'png)
    (printf "wrote ~a~n" (cli-snapshot))]
   [else
+   (define frame
+     (new frame%
+          [label (format "harmony viewer — {~a,~a}" STATE-P STATE-Q)]
+          [width  (cli-size)]
+          [height (cli-size)]))
+   (define canvas
+     (new harmony-canvas%
+          [parent frame]
+          [style '()]))
    (send canvas focus)
    (send frame show #t)])

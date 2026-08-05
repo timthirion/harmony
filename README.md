@@ -234,9 +234,11 @@ racket viewer.rkt -p 7 -q 3 --palette sunset
 
 The renderer is intentionally simpler than harmony's — Poincaré model only, straight-line polygons (no geodesic arcs), no motifs or highlights — so redraws stay interactive. For the polished still, snapshot the current view with `s` and re-render the same `{p,q}` through `harmony.rkt`.
 
+**Model.** The tessellation is computed once at startup (default depth 8 → ~11k tiles). The only per-frame state is the viewer's world position, which is clamped to keep the disk-preserving Möbius numerically stable. Pans apply that Möbius to the fixed pre-computed vertices — no drift, no flicker, no accumulated numerical error, but the explorable area is bounded. Drag toward the boundary and the view gently sticks at the clamp. For truly unbounded navigation through a hyperbolic tessellation, see [HyperRogue](https://www.roguetemple.com/z/hyper/) or [MagicTile](https://superliminal.com/andrey/MagicTile.html) — that requires a graph-based tessellation with orientation-reversing frame swaps on every tile-boundary crossing, a substantially bigger project.
+
 | control          | action                                                     |
 |------------------|------------------------------------------------------------|
-| Mouse drag       | Pan (hyperbolic translation)                               |
+| Mouse drag       | Pan (hyperbolic translation, clamped near the boundary)    |
 | Scroll wheel     | Euclidean zoom                                             |
 | `r`              | Reset view                                                 |
 | `s`              | Save `snapshot-<time>.png` to the working directory        |

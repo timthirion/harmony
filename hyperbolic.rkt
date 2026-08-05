@@ -86,8 +86,7 @@
 ;;    (-1 for the central tile itself);
 ;;  - axes is the list of (v1 . v2) reflection axes used to reach this tile
 ;;    from the central tile ('() for the central tile).
-(define (tessellate p q depth)
-  (define verts0 (polygon-vertices p q))
+(define (tessellate p q depth #:from [verts0 (polygon-vertices p q)])
   (define visited (make-hash))
   (define result '())
 
