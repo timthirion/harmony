@@ -62,6 +62,22 @@
 (define STATE-ZOOM  1.0)
 (define STATE-VIEWER 0+0i)
 (define VIEWER-CLAMP 0.92)  ; max |viewer|; above this the Möbius destabilizes
+(define STATE-MODEL "poincare")
+(define MODEL-CYCLE '("poincare" "klein" "halfplane" "band"))
+
+(define (cycle-model!)
+  (define idx (or (index-of MODEL-CYCLE STATE-MODEL) 0))
+  (set! STATE-MODEL (list-ref MODEL-CYCLE (modulo (+ idx 1) (length MODEL-CYCLE))))
+  (printf "model: ~a~n" STATE-MODEL))
+
+;; Project a Poincaré-disk complex point into the current model's coord.
+;; Same formulas as harmony.rkt's to-model.
+(define (project-to-model z)
+  (case STATE-MODEL
+    [("poincare")  z]
+    [("klein")     (/ (* 2 z) (+ 1 (sqr (magnitude z))))]
+    [("halfplane") (* +i (/ (+ 1 z) (- 1 z)))]
+    [("band")      (- (log (* +i (/ (+ 1 z) (- 1 z)))) (* +i (/ pi 2)))]))
 
 (define STATE-TILES '())         ; precomputed once
 (define TILE-CAP    6000)        ; soft cap; regens back off depth until under it
@@ -138,10 +154,49 @@
 
 ;; ---- Rendering ----
 
+;; Per-model viewport parameters. cx, cy is where model-origin lands; scale
+;; is model-units-per-pixel. Mirrors harmony.rkt's model viewport choices.
+(define (viewport-for-model W H)
+  (case STATE-MODEL
+    [("poincare" "klein")
+     (values (/ W 2.0) (/ H 2.0) (* STATE-ZOOM 0.47 (min W H)))]
+    [("halfplane")
+     ;; Real axis near bottom, real ∈ [-2.5, 2.5], imag ∈ [0, 4.5]
+     (define s (* STATE-ZOOM (min (/ W 5.5) (/ H 5.0))))
+     (values (/ W 2.0) (- H (* 0.08 H)) s)]
+    [("band")
+     ;; Strip centred: real ∈ [-π, π], imag ∈ [-π/2, π/2]
+     (define s (* STATE-ZOOM (min (/ W (* 2.1 pi)) (/ H (* 1.05 pi)))))
+     (values (/ W 2.0) (/ H 2.0) s)]))
+
+(define (draw-model-background! dc cx cy scale W H)
+  (send dc set-brush (make-object brush% (hex->color DISK-COLOR) 'solid))
+  (case STATE-MODEL
+    [("poincare" "klein")
+     (send dc draw-ellipse (- cx scale) (- cy scale) (* 2 scale) (* 2 scale))]
+    [("halfplane")
+     (send dc draw-rectangle 0 0 W cy)]
+    [("band")
+     (define y-top (- cy (* scale (/ pi 2))))
+     (define y-bot (+ cy (* scale (/ pi 2))))
+     (send dc draw-rectangle 0 y-top W (- y-bot y-top))]))
+
+(define (draw-model-boundary! dc cx cy scale W H)
+  (send dc set-brush (make-object brush% "black" 'transparent))
+  (send dc set-pen (make-object pen% (hex->color STROKE-COLOR) 2 'solid))
+  (case STATE-MODEL
+    [("poincare" "klein")
+     (send dc draw-ellipse (- cx scale) (- cy scale) (* 2 scale) (* 2 scale))]
+    [("halfplane")
+     (send dc draw-line 0 cy W cy)]
+    [("band")
+     (define y-top (- cy (* scale (/ pi 2))))
+     (define y-bot (+ cy (* scale (/ pi 2))))
+     (send dc draw-line 0 y-top W y-top)
+     (send dc draw-line 0 y-bot W y-bot)]))
+
 (define (paint-canvas! dc W H)
-  (define cx (/ W 2.0))
-  (define cy (/ H 2.0))
-  (define scale (* STATE-ZOOM 0.47 (min W H)))
+  (define-values (cx cy scale) (viewport-for-model W H))
   (define no-pen   (make-object pen%   "black" 0 'transparent))
   (define no-brush (make-object brush% "black" 'transparent))
 
@@ -150,23 +205,25 @@
   (send dc clear)
 
   (send dc set-pen no-pen)
-  (send dc set-brush (make-object brush% (hex->color DISK-COLOR) 'solid))
-  (send dc draw-ellipse (- cx scale) (- cy scale) (* 2 scale) (* 2 scale))
+  (draw-model-background! dc cx cy scale W H)
 
   (define-values (va vb) (translation-from STATE-VIEWER))
+  ;; Two-step: apply view Möbius in Poincaré, then project to the model.
   (define (v->screen z)
-    (define zt (mobius-apply va vb z))
+    (define poincare-pt (mobius-apply va vb z))
+    (define model-pt (project-to-model poincare-pt))
     (make-object point%
-      (+ cx (* scale (real-part zt)))
-      (- cy (* scale (imag-part zt)))))
+      (+ cx (* scale (real-part model-pt)))
+      (- cy (* scale (imag-part model-pt)))))
 
-  ;; Cull tiles whose visual centroid is essentially at the boundary — they
-  ;; are sub-pixel and dominate the render time.
+  ;; Cull tiles whose Poincaré centroid is essentially at the disk boundary.
+  ;; Under UHP/band projection those blow up to huge distances; culling here
+  ;; keeps them out of the render loop entirely.
   (define visible
     (for/list ([tile (in-list STATE-TILES)]
                #:when (let ([ctr (mobius-apply va vb
                                                (/ (apply + (first tile)) STATE-P))])
-                        (< (magnitude ctr) 0.998)))
+                        (< (magnitude ctr) 0.995)))
       tile))
 
   ;; Deepest first so shallow tiles paint on top.
@@ -183,9 +240,7 @@
   (for ([tile (in-list visible)])
     (send dc draw-polygon (map v->screen (first tile))))
 
-  (send dc set-pen (make-object pen% (hex->color STROKE-COLOR) 2 'solid))
-  (send dc set-brush no-brush)
-  (send dc draw-ellipse (- cx scale) (- cy scale) (* 2 scale) (* 2 scale)))
+  (draw-model-boundary! dc cx cy scale W H))
 
 ;; ---- Interaction ----
 
@@ -234,8 +289,10 @@
        (format " --pan ~a,~a"
                (~r (real-part STATE-VIEWER) #:precision '(= 4))
                (~r (imag-part STATE-VIEWER) #:precision '(= 4)))]))
-  (printf "racket harmony.rkt -p ~a -q ~a --depth ~a --palette ~a -d 1200 1200~a -f out.png~n"
-          STATE-P STATE-Q STATE-DEPTH STATE-PALETTE-NAME pan-arg))
+  (define model-arg
+    (if (equal? STATE-MODEL "poincare") "" (format " --model ~a" STATE-MODEL)))
+  (printf "racket harmony.rkt -p ~a -q ~a --depth ~a --palette ~a~a -d 1200 1200~a -f out.png~n"
+          STATE-P STATE-Q STATE-DEPTH STATE-PALETTE-NAME model-arg pan-arg))
 
 (define (save-snapshot! W H)
   (define bm (make-object bitmap%
@@ -298,6 +355,9 @@
          (refresh)]
         [(#\p)
          (cycle-palette!)
+         (refresh)]
+        [(#\m)
+         (cycle-model!)
          (refresh)]
         [(#\c)
          (print-cli-command!)]

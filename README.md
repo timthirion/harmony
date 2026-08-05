@@ -243,7 +243,8 @@ The renderer is intentionally simpler than harmony's — Poincaré model only, s
 | `r`              | Reset view                                                 |
 | `s`              | Save `snapshot-<time>.png` to the working directory        |
 | `p`              | Cycle palette (harmony → sunset → ocean → forest → mono)   |
-| `c`              | Print the equivalent `harmony.rkt` command line to stdout, including the current pan position via `--pan REAL,IMAG` — a "polish this view" bridge to the main renderer |
+| `m`              | Cycle projection model (poincare → klein → halfplane → band). Same tessellation, different projection — same tile set is reprojected every frame, no re-tessellation. |
+| `c`              | Print the equivalent `harmony.rkt` command line to stdout, including the current pan position via `--pan REAL,IMAG` and `--model NAME` if not Poincaré — a "polish this view" bridge to the main renderer |
 | `+` / `-`        | Increase / decrease BFS depth (regenerates tiles)          |
 
 Changing `{p,q}` in the viewer would require re-tessellating on every keypress, which locks up the paint loop for larger tilings. It's left as a command-line concern (`-p` / `-q` on relaunch), which composes naturally with `c` above: explore in the viewer, hit `c`, tweak the `-p`/`-q` in the printed command, re-render through `harmony.rkt` for the polished still.
