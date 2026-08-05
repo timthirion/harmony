@@ -276,7 +276,7 @@
   [else
    (define frame
      (new frame%
-          [label (format "harmony viewer — {~a,~a}" STATE-P STATE-Q)]
+          [label (format "harmony — {~a,~a}" STATE-P STATE-Q)]
           [width  (cli-size)]
           [height (cli-size)]))
    (define canvas
