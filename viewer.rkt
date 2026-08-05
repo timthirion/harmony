@@ -98,7 +98,7 @@
 
 (regen-tiles!)
 
-(define PALETTE-CYCLE '("harmony" "sunset" "ocean" "forest" "mono"))
+(define PALETTE-CYCLE '("harmony" "sunset" "ocean" "forest" "mono" "autumn" "frost" "berry"))
 (define STATE-PALETTE-NAME (cli-palette))
 (define ACTIVE-PALETTE (lookup-palette STATE-PALETTE-NAME))
 (define CENTER-COLOR (palette-center ACTIVE-PALETTE))

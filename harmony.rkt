@@ -45,7 +45,7 @@
   (tiling-q (string->number Q))]
  [("--depth") D "Tessellation recursion depth"
   (tiling-depth (string->number D))]
- [("--palette") NAME "Color palette: harmony, sunset, ocean, forest, mono"
+ [("--palette") NAME "Color palette: harmony, sunset, ocean, forest, mono, autumn, frost, berry"
   (palette-name NAME)]
  [("--no-spokes") "Omit the white vertex spokes"
   (draw-spokes? #f)]

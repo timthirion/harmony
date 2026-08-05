@@ -57,7 +57,31 @@
      (vector "#DADADA" "#BCBCBC" "#9E9E9E" "#7E7E7E" "#5F5F5F")
      (vector "#CFCFCF" "#B0B0B0" "#909090" "#707070" "#525252")
      (vector "#C4C4C4" "#A4A4A4" "#848484" "#646464" "#464646"))
-    "#E5E5E5" "#2A2A2A" "#FFFFFF" "#404040" "#404040")))
+    "#E5E5E5" "#2A2A2A" "#FFFFFF" "#404040" "#404040")
+
+   "autumn"
+   (palette
+    (vector
+     (vector "#F4C48C" "#E5A16A" "#D07E4A" "#B25D2D" "#8B4318")   ; rust
+     (vector "#E0A79A" "#C9846A" "#A9603F" "#8A3F1A" "#6B2810")   ; copper
+     (vector "#E4C87A" "#C9A55A" "#A7833F" "#83612B" "#5F401C"))  ; ochre
+    "#FFEEDA" "#3C1E10" "#FFF4E4" "#3D2013" "#3D2013")
+
+   "frost"
+   (palette
+    (vector
+     (vector "#E8F1F8" "#C4D9E8" "#97BCD4" "#6A9EBE" "#4383A6")   ; ice
+     (vector "#DAE0E5" "#B4BFC7" "#8D9DAA" "#66798A" "#43596E")   ; steel
+     (vector "#DDD3E5" "#B7A9CD" "#907FB1" "#6B5990" "#4B3B6C"))  ; lavender
+    "#F7FCFF" "#253848" "#FFFFFF" "#253848" "#253848")
+
+   "berry"
+   (palette
+    (vector
+     (vector "#E0B0BE" "#C88192" "#AE5468" "#8C334A" "#661C34")   ; plum
+     (vector "#D4A5C6" "#B47AA6" "#8F5285" "#6B3364" "#481B45")   ; magenta
+     (vector "#E0AFAD" "#C4837F" "#A55A54" "#813B34" "#5E211E"))  ; wine
+    "#F4DAE0" "#2A1220" "#FFF0F4" "#3A1D2F" "#3A1D2F")))
 
 (define (lookup-palette name)
   (hash-ref PALETTES name
