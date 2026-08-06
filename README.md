@@ -1,15 +1,17 @@
 # harmony
 
-Harmony renders regular `{p,q}` hyperbolic tessellations in the Poincaré disk model. It is a small Racket program that writes SVG or PNG.
+Harmony renders regular `{p,q}` hyperbolic tessellations. It's a small Racket program with two companions — a Euclidean tiler and an interactive viewer — that together render the same underlying pattern in a lot of ways: motifs, alternate projections, animations, and print-ready output.
 
 <p align="center">
-  <img src="examples/tiling-7-3-harmony.png" width="45%" alt="{7,3} tiling, harmony palette">
-  <img src="examples/tiling-8-3-ocean.png"   width="45%" alt="{8,3} tiling, ocean palette">
+  <img src="examples/tiling-7-3-harmony.png"                width="45%" alt="Classic {7,3} in the Poincaré disk, harmony palette">
+  <img src="examples/motifs/curves-8-3-ocean.png"           width="45%" alt="{8,3} with the curves motif — arcs flowing between adjacent tiles">
 </p>
 <p align="center">
-  <img src="examples/tiling-5-4-sunset.png"  width="45%" alt="{5,4} tiling, sunset palette">
-  <img src="examples/tiling-4-5-forest.png"  width="45%" alt="{4,5} tiling, forest palette">
+  <img src="examples/models/model-halfplane-7-3.png"        width="45%" alt="{7,3} projected onto the upper half-plane">
+  <img src="examples/animation/translate-7-3-sunset.gif"    width="45%" alt="{7,3} sunset translating back and forth along the real axis">
 </p>
+
+*Clockwise from top-left: a canonical {7,3} in the Poincaré disk; {8,3} with the `curves` motif interlocking across tiles; the same {7,3} projected onto the upper half-plane; a sunset {7,3} translating along a hyperbolic geodesic (animated). Sections below show every feature in more detail — [motifs](#motifs), [models](#models), [animation](#animation), [understanding {p,q}](#understanding-a-pq-tessellation), the [Euclidean companion](#companion-euclidean-tiler), the [interactive viewer](#companion-interactive-viewer), and [printing](#printing).*
 
 ## What is a `{p,q}` tiling?
 
