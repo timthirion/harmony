@@ -68,7 +68,16 @@
 (define (cycle-model!)
   (define idx (or (index-of MODEL-CYCLE STATE-MODEL) 0))
   (set! STATE-MODEL (list-ref MODEL-CYCLE (modulo (+ idx 1) (length MODEL-CYCLE))))
-  (printf "model: ~a~n" STATE-MODEL))
+  (printf "model: ~a~n" STATE-MODEL)
+  (update-title!))
+
+(define (window-title)
+  (format "harmony--{~a,~a} ~a" STATE-P STATE-Q STATE-MODEL))
+
+(define the-frame #f)
+
+(define (update-title!)
+  (when the-frame (send the-frame set-label (window-title))))
 
 ;; Project a Poincaré-disk complex point into the current model's coord.
 ;; Same formulas as harmony.rkt's to-model.
@@ -382,9 +391,10 @@
   [else
    (define frame
      (new frame%
-          [label (format "harmony — {~a,~a}" STATE-P STATE-Q)]
+          [label (window-title)]
           [width  (cli-size)]
           [height (cli-size)]))
+   (set! the-frame frame)
    (define canvas
      (new harmony-canvas%
           [parent frame]
