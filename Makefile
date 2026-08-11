@@ -3,7 +3,7 @@
 # Usage:
 #   make gallery         # rebuild everything
 #   make hero            # just the {p,q} hero images
-#   make motifs models educational euclidean print viewer animation
+#   make motifs models educational euclidean print viewer animation sphere moebius
 #   make clean-gallery   # delete regenerated outputs (keeps source)
 #
 # Every recipe below matches the reproducer command in the README so the
@@ -13,13 +13,14 @@ RACKET ?= racket
 HARMONY = $(RACKET) harmony.rkt
 EUCLIDEAN = $(RACKET) euclidean.rkt
 VIEWER = $(RACKET) viewer.rkt
+SPHERE = $(RACKET) sphere.rkt
 
 EX = examples
 
 .PHONY: gallery hero motifs models educational euclidean print viewer animation \
-        clean-gallery
+        sphere moebius clean-gallery
 
-gallery: hero motifs models educational euclidean print viewer animation
+gallery: hero motifs models educational euclidean print viewer animation sphere moebius
 
 # ---- Hero gallery (README top) ----
 hero: $(EX)/tiling-7-3-harmony.png \
@@ -144,8 +145,30 @@ $(EX)/animation/translate-7-3-sunset.gif $(EX)/animation/translate-7-3-sunset.mp
 	  -vf "scale=400:400" -c:v libx264 -pix_fmt yuv420p -movflags +faststart -crf 22 \
 	  $(EX)/animation/translate-7-3-sunset.mp4
 
+# ---- Möbius / Riemann-sphere viewer (still + animation) ----
+sphere: $(EX)/sphere/moebius-7-3-harmony.png
+
+$(EX)/sphere/moebius-7-3-harmony.png:
+	@mkdir -p $(dir $@)
+	$(SPHERE) -p 7 -q 3 --depth 8 --palette harmony --size 1200 \
+	  --y-turns 0.13 --x-turns 0.19 --snapshot $@
+
+moebius: $(EX)/animation/moebius-7-3-harmony.gif $(EX)/animation/moebius-7-3-harmony.mp4
+
+$(EX)/animation/moebius-7-3-harmony.gif $(EX)/animation/moebius-7-3-harmony.mp4:
+	@mkdir -p $(dir $@) /tmp/moebius-frames
+	@rm -f /tmp/moebius-frames/frame_*.png
+	$(SPHERE) -p 7 -q 3 --depth 6 --palette harmony --size 500 \
+	  --animate x --frames 60 --out-dir /tmp/moebius-frames
+	ffmpeg -y -framerate 20 -i /tmp/moebius-frames/frame_%04d.png \
+	  -vf "fps=15,scale=360:360:flags=lanczos,split[s0][s1];[s0]palettegen=max_colors=64:stats_mode=diff[p];[s1][p]paletteuse=dither=bayer:bayer_scale=4" \
+	  -loop 0 $(EX)/animation/moebius-7-3-harmony.gif
+	ffmpeg -y -framerate 20 -i /tmp/moebius-frames/frame_%04d.png \
+	  -vf "scale=500:500" -c:v libx264 -pix_fmt yuv420p -movflags +faststart -crf 22 \
+	  $(EX)/animation/moebius-7-3-harmony.mp4
+
 # ---- Cleanup ----
 clean-gallery:
 	rm -f $(EX)/tiling-*.png
 	rm -rf $(EX)/motifs $(EX)/models $(EX)/educational $(EX)/euclidean
-	rm -rf $(EX)/print $(EX)/viewer $(EX)/animation
+	rm -rf $(EX)/print $(EX)/viewer $(EX)/animation $(EX)/sphere

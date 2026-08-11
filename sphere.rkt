@@ -37,6 +37,11 @@
 (define cli-palette (make-parameter "harmony"))
 (define cli-size (make-parameter 800))
 (define cli-snapshot (make-parameter #f))
+(define cli-y-turns (make-parameter 0.0))
+(define cli-x-turns (make-parameter 0.0))
+(define cli-animate (make-parameter #f))
+(define cli-frames (make-parameter 60))
+(define cli-out-dir (make-parameter "frames"))
 
 (command-line
  #:usage-help "Roll a {p,q} tessellation on the Riemann sphere"
@@ -53,6 +58,16 @@
   (cli-size (string->number N))]
  [("--snapshot") FILE "Render one PNG and exit (no window)"
   (cli-snapshot FILE)]
+ [("--y-turns") T "Initial rotation around vertical (Y) axis, in full turns"
+  (cli-y-turns (string->number T))]
+ [("--x-turns") T "Initial rotation around horizontal (X) axis, in full turns"
+  (cli-x-turns (string->number T))]
+ [("--animate") AXIS "Emit frames of a full-loop rotation: 'y', 'x', or 'both'"
+  (cli-animate AXIS)]
+ [("--frames") N "Frames per loop (default 60)"
+  (cli-frames (string->number N))]
+ [("--out-dir") D "Directory for animation frames (default 'frames')"
+  (cli-out-dir D)]
  #:args () (void))
 
 (unless (> (* (- (cli-p) 2) (- (cli-q) 2)) 4)
@@ -68,7 +83,9 @@
 (define STATE-ZOOM  1.0)
 (define STATE-PALETTE-NAME (cli-palette))
 
-;; 3×3 rotation matrix, stored as a vector of three 3-vectors.
+;; 3×3 rotation matrix, stored as a vector of three 3-vectors. The identity
+;; matrix; --y-turns / --x-turns override it below once the rot-x / rot-y
+;; helpers are defined.
 (define STATE-ROTATION (vector (vector 1.0 0.0 0.0)
                                (vector 0.0 1.0 0.0)
                                (vector 0.0 0.0 1.0)))
@@ -395,16 +412,50 @@
         [(wheel-up)   (zoom-by! 1.12) (refresh)]
         [(wheel-down) (zoom-by! (/ 1.0 1.12)) (refresh)]))))
 
+;; Apply initial rotation (used by --y-turns/--x-turns and by --animate).
+(define (compose-initial-rotation!)
+  (define ay (* 2 pi (cli-y-turns)))
+  (define ax (* 2 pi (cli-x-turns)))
+  (set! STATE-ROTATION (mat-mul (rot-x ax) (rot-y ay))))
+
+(compose-initial-rotation!)
+
+(define (snapshot-to! path w h)
+  (define bm (make-object bitmap%
+               (inexact->exact (ceiling w))
+               (inexact->exact (ceiling h))))
+  (define dc (new bitmap-dc% [bitmap bm]))
+  (paint-canvas! dc w h)
+  (send bm save-file path 'png))
+
+(define (render-animation!)
+  (define w (cli-size))
+  (define h (cli-size))
+  (define n (cli-frames))
+  (define dir (cli-out-dir))
+  (unless (directory-exists? dir) (make-directory* dir))
+  (define axis (cli-animate))
+  (for ([i (in-range n)])
+    (define t (/ i (* 1.0 n)))
+    (define ay (case (string->symbol axis)
+                 [(y both) (* 2 pi t)]
+                 [else 0.0]))
+    (define ax (case (string->symbol axis)
+                 [(x both) (* 2 pi t)]
+                 [else 0.0]))
+    ;; Compose so we end where we started (identity at t=1).
+    (set! STATE-ROTATION (mat-mul (rot-x ax) (rot-y ay)))
+    (define path (format "~a/frame_~a.png" dir (~a i #:width 4 #:pad-string "0" #:align 'right)))
+    (snapshot-to! path w h)
+    (when (zero? (modulo i 10))
+      (printf "frame ~a/~a~n" i n)))
+  (printf "wrote ~a frames to ~a/~n" n dir))
+
 (cond
+  [(cli-animate)
+   (render-animation!)]
   [(cli-snapshot)
-   (define w (cli-size))
-   (define h (cli-size))
-   (define bm (make-object bitmap%
-                (inexact->exact (ceiling w))
-                (inexact->exact (ceiling h))))
-   (define dc (new bitmap-dc% [bitmap bm]))
-   (paint-canvas! dc w h)
-   (send bm save-file (cli-snapshot) 'png)
+   (snapshot-to! (cli-snapshot) (cli-size) (cli-size))
    (printf "wrote ~a~n" (cli-snapshot))]
   [else
    (define frame

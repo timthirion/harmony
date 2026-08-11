@@ -10,8 +10,12 @@ Harmony renders regular `{p,q}` hyperbolic tessellations. It's a small Racket pr
   <img src="examples/models/model-halfplane-7-3.png"        width="45%" alt="{7,3} projected onto the upper half-plane">
   <img src="examples/animation/translate-7-3-sunset.gif"    width="45%" alt="{7,3} sunset translating back and forth along the real axis">
 </p>
+<p align="center">
+  <img src="examples/sphere/moebius-7-3-harmony.png"        width="45%" alt="{7,3} rolled on the Riemann sphere — Möbius view">
+  <img src="examples/animation/moebius-7-3-harmony.gif"     width="45%" alt="{7,3} rolling Möbius transformation">
+</p>
 
-*Clockwise from top-left: a canonical {7,3} in the Poincaré disk; {8,3} with the `curves` motif interlocking across tiles; the same {7,3} projected onto the upper half-plane; a sunset {7,3} translating along a hyperbolic geodesic (animated). Sections below show every feature in more detail — [motifs](#motifs), [models](#models), [animation](#animation), [understanding {p,q}](#understanding-a-pq-tessellation), the [Euclidean companion](#companion-euclidean-tiler), the [interactive viewer](#companion-interactive-viewer), and [printing](#printing).*
+*Clockwise from top-left: a canonical {7,3} in the Poincaré disk; {8,3} with the `curves` motif interlocking across tiles; the same {7,3} projected onto the upper half-plane; a sunset {7,3} translating along a hyperbolic geodesic (animated); {7,3} rolled by a Möbius transformation via the Riemann-sphere viewer; the same {7,3} continuously rolling. Sections below show every feature in more detail — [motifs](#motifs), [models](#models), [animation](#animation), [understanding {p,q}](#understanding-a-pq-tessellation), the [Euclidean companion](#companion-euclidean-tiler), the [interactive viewer](#companion-interactive-viewer), the [Möbius viewer](#companion-möbius-viewer), and [printing](#printing).*
 
 ## What is a `{p,q}` tiling?
 
@@ -252,6 +256,42 @@ The renderer is intentionally simpler than harmony's — Poincaré model only, s
 Changing `{p,q}` in the viewer would require re-tessellating on every keypress, which locks up the paint loop for larger tilings. It's left as a command-line concern (`-p` / `-q` on relaunch), which composes naturally with `c` above: explore in the viewer, hit `c`, tweak the `-p`/`-q` in the printed command, re-render through `harmony.rkt` for the polished still.
 
 The window also supports `--snapshot FILE` for headless single-frame rendering — the image above was produced with `racket viewer.rkt --snapshot examples/viewer/viewer-7-3.png --size 700 --depth 6 --palette sunset`.
+
+## Companion: Möbius viewer
+
+`sphere.rkt` is a second interactive viewer whose transformation is *broader* than the hyperbolic isometry group. Mouse-drag rolls the tessellation by an arbitrary Möbius transformation of the extended plane — including maps that swap the interior and exterior of the Poincaré disk.
+
+<p align="center">
+  <img src="examples/sphere/moebius-7-3-harmony.png"    width="45%" alt="Möbius view — {7,3} rolled off-axis">
+  <img src="examples/animation/moebius-7-3-harmony.gif" width="45%" alt="Möbius roll animation">
+</p>
+
+**How the mechanic works.** Each Poincaré-disk vertex is lifted to the upper hemisphere of the Riemann sphere via inverse stereographic projection, then mirrored to fill the lower hemisphere — a full 2-sphere with the tessellation drawn on it. Every frame, a 3D rotation is applied to the sphere and the result is stereographically projected back to the plane. Because sphere rotations correspond to Möbius transformations of the extended plane, dragging the invisible sphere applies arbitrary Möbius maps to what you see. The vertical-axis rotations (drag horizontally) are exactly the hyperbolic rotations of the disk; the horizontal-axis rotations (drag vertically) are the new Möbius maps that carry tiles across the unit-circle boundary. See ["Möbius Transformations Revealed" (Arnold & Rogness, 2007)](https://www.youtube.com/watch?v=0z1fIsUNhO4) for a beautiful animation of the same construction.
+
+```sh
+racket sphere.rkt -p 7 -q 3 --palette harmony
+```
+
+| control          | action                                                          |
+|------------------|-----------------------------------------------------------------|
+| Mouse drag       | Roll the sphere — arbitrary Möbius transformation of the plane  |
+| Scroll wheel     | Zoom                                                            |
+| `r`              | Reset view                                                      |
+| `s`              | Save `sphere-<time>.png` to the working directory               |
+| `p`              | Cycle palette                                                   |
+| `+` / `-`        | Increase / decrease BFS depth (regenerates the sphere tiles)    |
+
+**Headless rendering.** `--snapshot FILE` writes a single PNG at the current initial rotation (`--y-turns` and `--x-turns`, both in units of full turns). `--animate {x,y,both}` emits `--frames N` PNGs into `--out-dir` for a full loop of rotation around the chosen axis:
+
+```sh
+racket sphere.rkt -p 7 -q 3 --depth 8 --palette harmony --size 1200 \
+  --y-turns 0.13 --x-turns 0.19 --snapshot moebius-7-3-harmony.png
+
+racket sphere.rkt -p 7 -q 3 --depth 6 --palette harmony --size 500 \
+  --animate x --frames 60 --out-dir /tmp/moebius-frames
+```
+
+The X-axis roll is the interesting one — that's the family of Möbius maps that swap the disk's inside and outside.
 
 ## Companion: Euclidean tiler
 
