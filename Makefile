@@ -159,11 +159,11 @@ $(EX)/animation/moebius-7-3-harmony.gif $(EX)/animation/moebius-7-3-harmony.mp4:
 	@mkdir -p $(dir $@) /tmp/moebius-frames
 	@rm -f /tmp/moebius-frames/frame_*.png
 	$(SPHERE) -p 7 -q 3 --depth 6 --palette harmony --size 500 \
-	  --animate x --frames 60 --out-dir /tmp/moebius-frames
-	ffmpeg -y -framerate 20 -i /tmp/moebius-frames/frame_%04d.png \
-	  -vf "fps=15,scale=360:360:flags=lanczos,split[s0][s1];[s0]palettegen=max_colors=64:stats_mode=diff[p];[s1][p]paletteuse=dither=bayer:bayer_scale=4" \
+	  --animate x --frames 90 --out-dir /tmp/moebius-frames
+	ffmpeg -y -framerate 15 -i /tmp/moebius-frames/frame_%04d.png \
+	  -vf "fps=15,scale=320:320:flags=lanczos,split[s0][s1];[s0]palettegen=max_colors=48:stats_mode=diff[p];[s1][p]paletteuse=dither=bayer:bayer_scale=4" \
 	  -loop 0 $(EX)/animation/moebius-7-3-harmony.gif
-	ffmpeg -y -framerate 20 -i /tmp/moebius-frames/frame_%04d.png \
+	ffmpeg -y -framerate 15 -i /tmp/moebius-frames/frame_%04d.png \
 	  -vf "scale=500:500" -c:v libx264 -pix_fmt yuv420p -movflags +faststart -crf 22 \
 	  $(EX)/animation/moebius-7-3-harmony.mp4
 
