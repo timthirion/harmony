@@ -3,3 +3,4 @@ output.png
 output_*.svg
 output_*.png
 /frames/
+compiled/

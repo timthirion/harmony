@@ -4,6 +4,11 @@
 (require "hyperbolic.rkt")
 (require "palettes.rkt")
 (require racket/draw)
+(require ffi/unsafe
+         racket/draw/unsafe/cairo-lib
+         ;; in-cairo-context is a local member name, so it has to come from
+         ;; racket/draw's private module to be callable on a pdf-dc%.
+         (only-in racket/draw/private/local in-cairo-context))
 
 (define (atanh x) (* 0.5 (log (/ (+ 1 x) (- 1 x)))))
 
@@ -771,6 +776,23 @@
   (draw-tessellation! dc tiles p cx cy scale W H)
   (send bm save-file file 'png))
 
+;; cairo stamps every PDF with the current time as /CreationDate, so
+;; re-rendering an unchanged image still changes the file. cairo 1.18 ignores
+;; SOURCE_DATE_EPOCH, but setting CREATE_DATE to "" drops the entry, which
+;; makes PDF output byte-for-byte reproducible.
+(define CAIRO_PDF_METADATA_CREATE_DATE 5)
+(define cairo_get_target
+  (get-ffi-obj "cairo_get_target" cairo-lib (_fun _pointer -> _pointer)))
+(define cairo_pdf_surface_set_metadata
+  (get-ffi-obj "cairo_pdf_surface_set_metadata" cairo-lib
+               (_fun _pointer _int _string/utf-8 -> _void)))
+
+(define (omit-pdf-creation-date! dc)
+  (send dc in-cairo-context
+        (lambda (cr)
+          (cairo_pdf_surface_set_metadata (cairo_get_target cr)
+                                          CAIRO_PDF_METADATA_CREATE_DATE ""))))
+
 (define (write-pdf! tiles p cx cy scale W H file)
   ;; racket/draw's pdf-dc% draws with 1 unit = 1/96 inch, but the constructor's
   ;; width/height are in points (1/72 inch), so the page size is W * 72/96.
@@ -781,6 +803,7 @@
                   [height (* H 72/96)]
                   [output file]))
   (send dc start-doc "harmony")
+  (omit-pdf-creation-date! dc)
   (send dc start-page)
   (draw-tessellation! dc tiles p cx cy scale W H)
   (send dc end-page)
